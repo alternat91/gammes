@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Accords" />
+  <title>Générateur d'accords de guitare</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #E8EDF5; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; overscroll-behavior: none; }
+    ::-webkit-scrollbar { display: none; }
+    button { -webkit-appearance: none; font-family: inherit; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef } = React;
+
+const NOTES    = ["Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
+const NOTES_EN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+/* ------------------------------------------------------------------ */
+/*  Dictionnaire d'accords                                             */
+/* ------------------------------------------------------------------ */
+
+const CHORD_CATEGORIES = {
+  triades: { label:"Triades", chords:{
+    maj:   { label:"Majeur",      sym:"",     intervals:[0,4,7], color:"#4F8EF7", description:"L'accord de base, clair",   genres:"Tous styles" },
+    min:   { label:"Mineur",      sym:"m",    intervals:[0,3,7], color:"#8B5CF6", description:"Sombre et mélancolique",     genres:"Tous styles" },
+    five:  { label:"Power chord", sym:"5",    intervals:[0,7],   color:"#EF4444", description:"Ni majeur ni mineur",        genres:"Rock, Metal" },
+    sus4:  { label:"Sus4",        sym:"sus4", intervals:[0,5,7], color:"#06B6D4", description:"En suspens, veut résoudre",  genres:"Pop, Rock" },
+    sus2:  { label:"Sus2",        sym:"sus2", intervals:[0,2,7], color:"#0EA5E9", description:"Ouvert et aérien",           genres:"Pop, Folk" },
+    dim:   { label:"Diminué",     sym:"dim",  intervals:[0,3,6], color:"#7C3AED", description:"Instable, de passage",       genres:"Classique, Jazz" },
+    aug:   { label:"Augmenté",    sym:"aug",  intervals:[0,4,8], color:"#DB2777", description:"Étrange et flottant",        genres:"Jazz, Film" },
+  }},
+  septiemes: { label:"Septièmes", chords:{
+    dom7:      { label:"7e de dominante", sym:"7",     intervals:[0,4,7,10], optional:[7], color:"#F59E0B", description:"Le moteur du blues",      genres:"Blues, Jazz" },
+    maj7:      { label:"Majeur 7",        sym:"maj7",  intervals:[0,4,7,11], optional:[7], color:"#10B981", description:"Doux et rêveur",          genres:"Jazz, Bossa" },
+    min7:      { label:"Mineur 7",        sym:"m7",    intervals:[0,3,7,10], optional:[7], color:"#8B5CF6", description:"Velouté, jazz et soul",   genres:"Jazz, Soul" },
+    m7b5:      { label:"Demi-diminué",    sym:"m7b5",  intervals:[0,3,6,10], color:"#6D28D9", description:"Le II du mineur",         genres:"Jazz" },
+    dim7:      { label:"Diminué 7",       sym:"dim7",  intervals:[0,3,6,9],  color:"#7C3AED", description:"Symétrique, très tendu",  genres:"Jazz, Classique" },
+    minmaj7:   { label:"Mineur maj7",     sym:"mMaj7", intervals:[0,3,7,11], optional:[7], color:"#A21CAF", description:"Mystérieux, à la James Bond", genres:"Jazz, Film" },
+    sept_sus4: { label:"7sus4",           sym:"7sus4", intervals:[0,5,7,10], optional:[7], color:"#0EA5E9", description:"Dominante sans tension",  genres:"Funk, Pop" },
+  }},
+  enrichis: { label:"Enrichis", chords:{
+    six:      { label:"Sixte",     sym:"6",    intervals:[0,4,7,9],       optional:[7], color:"#22C55E", description:"Vintage et souriant",   genres:"Swing, Pop" },
+    min6:     { label:"Mineur 6",  sym:"m6",   intervals:[0,3,7,9],       optional:[7], color:"#16A34A", description:"Mineur qui respire",    genres:"Jazz, Bossa" },
+    add9:     { label:"Add9",      sym:"add9", intervals:[0,4,7,14],      optional:[7], color:"#34D399", description:"Majeur coloré, sans 7e", genres:"Pop, Folk" },
+    nine:     { label:"9e",        sym:"9",    intervals:[0,4,7,10,14],   optional:[7,14], color:"#F59E0B", description:"La dominante du funk", genres:"Funk, Blues" },
+    maj9:     { label:"Majeur 9",  sym:"maj9", intervals:[0,4,7,11,14],   optional:[7], color:"#10B981", description:"Nappe de velours",      genres:"Jazz, Néo-soul" },
+    min9:     { label:"Mineur 9",  sym:"m9",   intervals:[0,3,7,10,14],   optional:[7], color:"#059669", description:"Mineur profond",        genres:"Soul, Jazz" },
+    eleven:   { label:"11e",       sym:"11",   intervals:[0,7,10,14,17],  optional:[7,14], color:"#D97706", description:"Dominante suspendue",  genres:"Funk, Fusion" },
+    min11:    { label:"Mineur 11", sym:"m11",  intervals:[0,3,7,10,14,17],optional:[7,14], color:"#047857", description:"Large et modal",       genres:"Jazz, Néo-soul" },
+    thirteen: { label:"13e",       sym:"13",   intervals:[0,4,7,10,14,21],optional:[7,14], color:"#B45309", description:"Dominante complète",   genres:"Jazz, Big band" },
+  }},
+  alteres: { label:"Altérés", chords:{
+    sept_b9:  { label:"7 b9",  sym:"7b9",  intervals:[0,4,7,10,13], optional:[7], color:"#DC2626", description:"Tension espagnole",    genres:"Jazz, Flamenco" },
+    sept_d9:  { label:"7 #9",  sym:"7#9",  intervals:[0,4,7,10,15], optional:[7], color:"#EA580C", description:"L'accord de Hendrix",  genres:"Rock, Funk" },
+    sept_d5:  { label:"7 #5",  sym:"7#5",  intervals:[0,4,8,10],    color:"#BE185D", description:"Dominante augmentée",  genres:"Jazz" },
+    sept_b5:  { label:"7 b5",  sym:"7b5",  intervals:[0,4,6,10],    color:"#9D174D", description:"Symétrique et acide",  genres:"Jazz, Bebop" },
+    sept_d11: { label:"7 #11", sym:"7#11", intervals:[0,4,7,10,18], optional:[7], color:"#C026D3", description:"Couleur lydienne",     genres:"Fusion" },
+    sept_b13: { label:"7 b13", sym:"7b13", intervals:[0,4,7,10,20], optional:[7], color:"#86198F", description:"Sombre sur la V",      genres:"Jazz" },
+  }},
+};
+
+const CHORD_TYPES = Object.values(CHORD_CATEGORIES).reduce((a,c)=>({...a,...c.chords}), {});
+
+const TUNINGS = {
+  standard: { label:"Standard",   notes:["E","A","D","G","B","E"],    midi:[40,45,50,55,59,64] },
+  dropd:    { label:"Drop D",     notes:["D","A","D","G","B","E"],    midi:[38,45,50,55,59,64] },
+  halfdown: { label:"½ ton bas",  notes:["E♭","A♭","D♭","G♭","B♭","E♭"], midi:[39,44,49,54,58,63] },
+  dadgad:   { label:"DADGAD",     notes:["D","A","D","G","A","D"],    midi:[38,45,50,55,57,62] },
+  openg:    { label:"Open G",     notes:["D","G","D","G","B","D"],    midi:[38,43,50,55,59,62] },
+  opend:    { label:"Open D",     notes:["D","A","D","F#","A","D"],   midi:[38,45,50,54,57,62] },
+};
+
+// Nom du degré pour chaque intervalle utilisé dans le dictionnaire
+const DEGREES = {
+  0:["1","Fondamentale"], 2:["9","Neuvième"], 3:["♭3","Tierce mineure"], 4:["3","Tierce majeure"],
+  5:["4","Quarte"], 6:["♭5","Quinte diminuée"], 7:["5","Quinte"], 8:["♯5","Quinte augmentée"],
+  9:["6","Sixte"], 10:["♭7","Septième mineure"], 11:["7","Septième majeure"], 13:["♭9","Neuvième mineure"],
+  14:["9","Neuvième"], 15:["♯9","Neuvième augmentée"], 17:["11","Onzième"], 18:["♯11","Onzième augmentée"],
+  20:["♭13","Treizième mineure"], 21:["13","Treizième"],
+};
+
+const MAX_FRET = 15;
+const pc = m => ((m % 12) + 12) % 12;
+
+/* ------------------------------------------------------------------ */
+/*  Générateur : recherche et classement des positions jouables        */
+/* ------------------------------------------------------------------ */
+
+// Doigté, barré et jouabilité d'une position
+function analyze(v, tuning) {
+  const sounded = [];
+  for (let s = 0; s < v.length; s++) if (v[s] !== null) sounded.push(s);
+  const fretted = sounded.filter(s => v[s] > 0);
+  const opens = sounded.filter(s => v[s] === 0);
+  if (!fretted.length) return { fingers:0, barre:null, minFret:0, maxFret:0, sounded, opens };
+
+  const minFret = Math.min(...fretted.map(s => v[s]));
+  const maxFret = Math.max(...fretted.map(s => v[s]));
+  const atMin = fretted.filter(s => v[s] === minFret);
+
+  let barre = null;
+  if (atMin.length >= 2) {
+    const from = atMin[0], to = atMin[atMin.length - 1];
+    // impossible si le barré étouffe une corde à vide qu'on veut entendre
+    if (!opens.some(s => s > from && s < to)) barre = { fret:minFret, from, to };
+  }
+  const fingers = barre ? 1 + fretted.filter(s => v[s] > minFret).length : fretted.length;
+  return { fingers, barre, minFret, maxFret, sounded, opens };
+}
+
+// Numéros de doigts à afficher (1 = index … 4 = auriculaire)
+function fingering(v, a) {
+  const fing = v.map(() => 0);
+  if (!a.fingers) return fing;
+  let next = 1;
+  let rest = a.sounded.filter(s => v[s] > 0);
+  if (a.barre) {
+    rest.filter(s => v[s] === a.barre.fret).forEach(s => { fing[s] = 1; });
+    rest = rest.filter(s => v[s] > a.barre.fret);
+    next = 2;
+  }
+  rest.sort((x, y) => v[x] - v[y] || x - y).forEach(s => { fing[s] = Math.min(next++, 4); });
+  return fing;
+}
+
+function generateVoicings(rootPc, typeKey, tuningMidi, opts = {}) {
+  const t = CHORD_TYPES[typeKey];
+  const N = tuningMidi.length;
+  const allowInversion = !!opts.inversions;
+  const maxResults = opts.max || 8;
+
+  const tones = t.intervals.map(iv => ({ iv, pc:(rootPc + iv) % 12, optional:(t.optional || []).includes(iv) }));
+  const chordPcs = new Set(tones.map(x => x.pc));
+  const requiredPcs = [...new Set(tones.filter(x => !x.optional).map(x => x.pc))];
+  const minSounded = Math.max(3, requiredPcs.length);
+  const found = new Map();
+
+  for (let w = 0; w <= 12; w++) {
+    const lo = w === 0 ? 0 : w;
+    const cands = [];
+    for (let s = 0; s < N; s++) {
+      const list = [null];
+      for (let f = lo; f <= Math.min(w + 3, MAX_FRET); f++) {
+        if (chordPcs.has(pc(tuningMidi[s] + f))) list.push(f);
+      }
+      // les cordes à vide restent utilisables dans les positions basses
+      if (w > 0 && w <= 4 && chordPcs.has(pc(tuningMidi[s]))) list.unshift(0);
+      cands.push(list);
+    }
+
+    const cur = new Array(N).fill(null);
+    (function dfs(s) {
+      if (s === N) {
+        const v = cur.slice();
+        if (v.filter(x => x !== null).length < minSounded) return;
+        const pcs = new Set();
+        v.forEach((f, i) => { if (f !== null) pcs.add(pc(tuningMidi[i] + f)); });
+        if (!requiredPcs.every(p => pcs.has(p))) return;
+        const bass = v.findIndex(x => x !== null);
+        const bassPc = pc(tuningMidi[bass] + v[bass]);
+        if (!allowInversion && bassPc !== rootPc) return;
+        const a = analyze(v, tuningMidi);
+        if (a.fingers > 4) return;
+        // au plus une corde étouffée au milieu de la position
+        let holes = 0;
+        for (let i = a.sounded[0]; i < a.sounded[a.sounded.length - 1]; i++) if (v[i] === null) holes++;
+        if (holes > 1) return;
+        const key = v.map(x => (x === null ? "x" : x)).join(".");
+        if (!found.has(key)) found.set(key, { v, a, holes, bassPc, pcs });
+        return;
+      }
+      for (const f of cands[s]) { cur[s] = f; dfs(s + 1); }
+      cur[s] = null;
+    })(0);
+  }
+
+  const scored = [...found.values()].map(o => {
+    const { v, a, holes, bassPc, pcs } = o;
+    const muted = v.filter(x => x === null).length;
+    const missing = tones.filter(x => x.optional && !pcs.has(x.pc)).length;
+    const midis = [];
+    v.forEach((f, i) => { if (f !== null) midis.push(tuningMidi[i] + f); });
+    // frottements : secondes trop serrées dans le grave
+    let clash = 0;
+    for (let i = 1; i < midis.length; i++) {
+      const d = midis[i] - midis[i - 1];
+      if (d === 1 && midis[i] < 58) clash += 1;
+      else if (d === 2 && midis[i] < 52) clash += 0.5;
+    }
+    let cost = a.minFret * 0.55 + (a.maxFret - a.minFret) * 1.1 + a.fingers * 0.9
+             + muted * 1.6 + holes * 4 + missing * 1.2 + clash * 2.5 - a.opens.length * 0.7;
+    if (bassPc !== rootPc) cost += 3.5;
+    if (a.barre) cost += 0.6;
+    return { ...o, cost, midis };
+  }).sort((x, y) => x.cost - y.cost);
+
+  // b n'est que a avec une corde étouffée en plus ?
+  const isSubsetOf = (b, a) => b.every((f, i) => f === a[i] || f === null);
+
+  const perPos = {}, out = [];
+  for (const c of scored) {
+    const p = c.a.minFret;
+    if (perPos[p] >= 2) continue;
+    if (out.some(k => isSubsetOf(c.v, k.v) || isSubsetOf(k.v, c.v))) continue;
+    perPos[p] = (perPos[p] || 0) + 1;
+    out.push(c);
+    if (out.length >= maxResults) break;
+  }
+
+  return out.map(c => ({
+    frets: c.v,
+    fingers: fingering(c.v, c.a),
+    barre: c.a.barre,
+    minFret: c.a.minFret,
+    maxFret: c.a.maxFret,
+    fingerCount: c.a.fingers,
+    midis: c.midis,
+    bassPc: c.bassPc,
+  }));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audio : corde pincée (Karplus-Strong), sans fichier externe        */
+/* ------------------------------------------------------------------ */
+
+let audioCtx = null;
+function getCtx() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+
+function pluckBuffer(ctx, freq, dur) {
+  const sr = ctx.sampleRate;
+  const period = Math.max(2, Math.round(sr / freq));
+  const len = Math.floor(sr * dur);
+  const buf = ctx.createBuffer(1, len, sr);
+  const out = buf.getChannelData(0);
+  const wt = new Float32Array(period);
+  for (let i = 0; i < period; i++) wt[i] = Math.random() * 2 - 1;
+  let idx = 0;
+  for (let i = 0; i < len; i++) {
+    const cur = wt[idx], nxt = wt[(idx + 1) % period];
+    wt[idx] = (cur + nxt) * 0.5 * 0.9965;
+    out[i] = cur * (1 - i / len);        // extinction douce en fin de note
+    idx = (idx + 1) % period;
+  }
+  return buf;
+}
+
+function strum(midis, { down = true } = {}) {
+  const ctx = getCtx();
+  if (!ctx) return;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass"; lp.frequency.value = 3800;
+  master.connect(lp); lp.connect(ctx.destination);
+
+  const order = down ? midis : [...midis].reverse();
+  order.forEach((m, i) => {
+    const freq = 440 * Math.pow(2, (m - 69) / 12);
+    const src = ctx.createBufferSource();
+    src.buffer = pluckBuffer(ctx, freq, 2.2);
+    const g = ctx.createGain();
+    g.gain.value = 0.9 / Math.sqrt(order.length);
+    src.connect(g); g.connect(master);
+    src.start(ctx.currentTime + i * 0.035);
+    src.stop(ctx.currentTime + i * 0.035 + 2.2);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Diagramme d'accord                                                 */
+/* ------------------------------------------------------------------ */
+
+function ChordDiagram({ frets, fingers, barre, minFret, maxFret, tuning, color, showNames }) {
+  const N = frets.length;
+  const SHOWN = 5;
+  const start = maxFret <= SHOWN - 1 ? 1 : minFret;
+  const SX = 17, SY = 19, OX = 23, OY = 20;
+  const W = OX + (N - 1) * SX + 12;
+  const H = OY + SHOWN * SY + (showNames ? 14 : 5);
+  const x = s => OX + s * SX;
+  const y = f => OY + (f - start) * SY;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block"}}>
+      {/* cases */}
+      {Array.from({length:SHOWN + 1}, (_, j) => (
+        <line key={"f"+j} x1={x(0)} y1={OY + j*SY} x2={x(N-1)} y2={OY + j*SY} stroke="#CBD5E1" strokeWidth={j===0 && start===1 ? 0 : 1}/>
+      ))}
+      {start === 1 && <rect x={x(0)-1} y={OY-3} width={(N-1)*SX+2} height={4} rx={1} fill="#0F172A"/>}
+      {start > 1 && <text x={x(0)-11} y={OY+13} textAnchor="end" fontSize="9" fontWeight="700" fill="#94A3B8">{start}</text>}
+
+      {/* cordes */}
+      {frets.map((f, s) => (
+        <line key={"s"+s} x1={x(s)} y1={OY} x2={x(s)} y2={OY + SHOWN*SY} stroke="#94A3B8" strokeWidth={0.6 + (N-1-s)*0.22}/>
+      ))}
+
+      {/* cordes à vide / étouffées */}
+      {frets.map((f, s) => f === null
+        ? <text key={"x"+s} x={x(s)} y={OY-7} textAnchor="middle" fontSize="9" fontWeight="700" fill="#CBD5E1">✕</text>
+        : f === 0
+          ? <circle key={"o"+s} cx={x(s)} cy={OY-10} r={3.6} fill="none" stroke={color} strokeWidth="1.6"/>
+          : null)}
+
+      {/* barré */}
+      {barre && barre.fret >= start && (
+        <rect x={x(barre.from)-7} y={y(barre.fret)+2.5} width={(barre.to-barre.from)*SX+14} height={14} rx={7} fill={color} opacity="0.9"/>
+      )}
+
+      {/* notes — sur un barré, seuls les deux bouts portent le numéro de doigt */}
+      {frets.map((f, s) => {
+        if (f === null || f === 0) return null;
+        if (barre && f === barre.fret && s > barre.from && s < barre.to) return null;
+        const cy = y(f) + 9.5;
+        return (
+          <g key={"n"+s}>
+            <circle cx={x(s)} cy={cy} r={7} fill={color}/>
+            {fingers[s] > 0 && <text x={x(s)} y={cy+2.8} textAnchor="middle" fontSize="8" fontWeight="800" fill="white">{fingers[s]}</text>}
+          </g>
+        );
+      })}
+
+      {/* noms des notes */}
+      {showNames && frets.map((f, s) => (
+        <text key={"nm"+s} x={x(s)} y={OY + SHOWN*SY + 10} textAnchor="middle" fontSize="7" fontWeight="700"
+              fill={f === null ? "#CBD5E1" : "#475569"}>
+          {f === null ? "–" : NOTES_EN[pc(tuning[s] + f)]}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function tabString(frets) {
+  return frets.map(f => (f === null ? "x" : f)).join(frets.some(f => f !== null && f > 9) ? "-" : "");
+}
+
+function VoicingCard({ v, tuning, color, showNames, index }) {
+  const [played, setPlayed] = useState(false);
+  const open = v.minFret === 0 || v.frets.some(f => f === 0);
+  const tags = [];
+  if (v.barre) tags.push("barré");
+  else if (open) tags.push("ouvert");
+  if (v.minFret > 0) tags.push(`case ${v.minFret}`);
+
+  function play() {
+    strum(v.midis);
+    setPlayed(true);
+    setTimeout(() => setPlayed(false), 400);
+  }
+
+  return (
+    <div style={{background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:14,padding:"9px 9px 7px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontSize:9,fontWeight:800,color:"#0F172A"}}>#{index + 1}</div>
+        <div style={{fontSize:8,color:"#94A3B8",fontWeight:600}}>{tags.join(" · ")}</div>
+      </div>
+      <ChordDiagram {...v} tuning={tuning} color={color} showNames={showNames}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:5,gap:6}}>
+        <div style={{fontSize:9,fontWeight:700,color:"#64748B",fontFamily:"ui-monospace, monospace",letterSpacing:.5}}>{tabString(v.frets)}</div>
+        <button onClick={play} style={{border:"none",background:played?color:"#0F172A",color:"white",borderRadius:8,padding:"4px 9px",fontSize:10,fontWeight:700,cursor:"pointer",flexShrink:0}}>▶</button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Interface                                                          */
+/* ------------------------------------------------------------------ */
+
+function ChordCard({ k, selected, onClick }) {
+  const c = CHORD_TYPES[k];
+  return (
+    <button onClick={onClick} style={{background:selected?c.color:"#F8FAFC",border:`2px solid ${selected?c.color:"#E2E8F0"}`,borderRadius:12,padding:"9px 11px",cursor:"pointer",textAlign:"left",minWidth:125,flexShrink:0}}>
+      <div style={{fontSize:11,fontWeight:800,color:selected?"white":"#1E293B",marginBottom:2}}>{c.label}</div>
+      <div style={{fontSize:9,color:selected?"rgba(255,255,255,.7)":"#94A3B8",marginBottom:4}}>{c.description}</div>
+      <div style={{fontSize:8,fontWeight:700,color:selected?"rgba(255,255,255,.55)":c.color,textTransform:"uppercase",letterSpacing:.5}}>{c.genres}</div>
+    </button>
+  );
+}
+
+function Section({ label, children }) {
+  return (
+    <div style={{marginBottom:18}}>
+      <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1.5,marginBottom:9}}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function Toggle({ on, onClick, label, color }) {
+  return (
+    <button onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,background:"transparent",border:"none",padding:0,cursor:"pointer"}}>
+      <div style={{width:30,height:18,borderRadius:9,background:on?color:"#E2E8F0",position:"relative",transition:"background .15s",flexShrink:0}}>
+        <div style={{position:"absolute",top:2,left:on?14:2,width:14,height:14,borderRadius:"50%",background:"white",boxShadow:"0 1px 3px rgba(0,0,0,.2)",transition:"left .15s"}}/>
+      </div>
+      <span style={{fontSize:10,fontWeight:600,color:on?"#0F172A":"#94A3B8"}}>{label}</span>
+    </button>
+  );
+}
+
+function App() {
+  const [root, setRoot] = useState(0);
+  const [type, setType] = useState("maj");
+  const [cat, setCat] = useState("triades");
+  const [tuningKey, setTuningKey] = useState("standard");
+  const [inversions, setInversions] = useState(false);
+  const [showNames, setShowNames] = useState(false);
+  const [info, setInfo] = useState(false);
+
+  const chord = CHORD_TYPES[type];
+  const tuning = TUNINGS[tuningKey];
+  const symbol = NOTES_EN[root] + chord.sym;
+
+  const voicings = useMemo(
+    () => generateVoicings(root, type, tuning.midi, { inversions, max:8 }),
+    [root, type, tuningKey, inversions]
+  );
+
+  const tones = chord.intervals.map(iv => ({
+    iv, pc:(root + iv) % 12,
+    deg:(DEGREES[iv] || [String(iv), ""])[0],
+    name:(DEGREES[iv] || ["", "Intervalle"])[1],
+    optional:(chord.optional || []).includes(iv),
+  }));
+
+  function changeCat(c) {
+    setCat(c);
+    setType(Object.keys(CHORD_CATEGORIES[c].chords)[0]);
+  }
+
+  function playAll() {
+    if (voicings[0]) strum(voicings[0].midis);
+  }
+
+  return (
+    <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
+
+        <div style={{background:"#0F172A",padding:"env(safe-area-inset-top, 14px) 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+          <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+        </div>
+
+        <div style={{background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:9,color:"#93C5FD",letterSpacing:2,marginBottom:3,textTransform:"uppercase"}}>Générateur d'accords</div>
+              <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>{NOTES[root]} {chord.label}</h1>
+              <div style={{fontSize:11,color:"#93C5FD",marginTop:3,fontWeight:700,letterSpacing:.5}}>{symbol} · {tuning.label}</div>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <a href="index.html" style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 10px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>Gammes</a>
+              <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
+            </div>
+          </div>
+          <div style={{marginTop:12,display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+            {tones.map((t, i) => (
+              <div key={i} style={{background:i===0?chord.color:"rgba(255,255,255,.1)",borderRadius:7,padding:"2px 8px",fontSize:10,fontWeight:700,color:"white",display:"flex",flexDirection:"column",alignItems:"center",opacity:t.optional?.6:1}}>
+                <span>{NOTES[t.pc]}</span><span style={{fontSize:7,opacity:.7}}>{t.deg}</span>
+              </div>
+            ))}
+            <button onClick={playAll} style={{marginLeft:"auto",background:chord.color,border:"none",borderRadius:9,padding:"5px 11px",color:"white",fontSize:11,fontWeight:800,cursor:"pointer"}}>▶ Écouter</button>
+          </div>
+        </div>
+
+        {info && (
+          <div style={{background:"#EFF6FF",borderBottom:"1px solid #BFDBFE",padding:"11px 18px",fontSize:11,color:"#1E40AF",lineHeight:1.6}}>
+            <strong>{NOTES[root]} {chord.label}</strong> — {chord.description}<br/>
+            <span style={{fontSize:10,color:"#3B82F6"}}>
+              Formule : {tones.map(t => t.deg).join(" – ")} · {tones.length} notes · Intervalles : {chord.intervals.join(" – ")} demi-tons
+            </span><br/>
+            <span style={{fontSize:10,color:"#3B82F6"}}>
+              Les positions sont calculées pour l'accordage {tuning.label} ({tuning.notes.join(" ")}), avec au plus 4 doigts et 4 cases d'écart.
+              {(chord.optional||[]).length > 0 && " Les notes en transparence peuvent être omises."}
+            </span>
+          </div>
+        )}
+
+        <div style={{flex:1,padding:"14px 14px 40px"}}>
+
+          <Section label="Tonique">
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {NOTES.map((n, i) => (
+                <button key={i} onClick={()=>setRoot(i)} style={{width:36,height:36,borderRadius:9,border:`2px solid ${root===i?chord.color:"#E2E8F0"}`,background:root===i?chord.color:"#F8FAFC",color:root===i?"white":"#1E293B",fontSize:10,fontWeight:700,cursor:"pointer",flexShrink:0}}>{n}</button>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Type d'accord">
+            <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:3,marginBottom:8}}>
+              {Object.entries(CHORD_CATEGORIES).map(([k, c]) => (
+                <button key={k} onClick={()=>changeCat(k)} style={{padding:"5px 11px",borderRadius:20,border:"none",flexShrink:0,background:cat===k?"#0F172A":"#F1F5F9",color:cat===k?"white":"#64748B",fontSize:11,fontWeight:700,cursor:"pointer"}}>{c.label}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:4}}>
+              {Object.keys(CHORD_CATEGORIES[cat].chords).map(k => (
+                <ChordCard key={k} k={k} selected={type===k} onClick={()=>setType(k)}/>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Accordage">
+            <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:3}}>
+              {Object.entries(TUNINGS).map(([k, t]) => (
+                <button key={k} onClick={()=>setTuningKey(k)} style={{padding:"6px 10px",borderRadius:10,border:`2px solid ${tuningKey===k?"#0F172A":"#E2E8F0"}`,background:tuningKey===k?"#0F172A":"#F8FAFC",flexShrink:0,cursor:"pointer",textAlign:"left"}}>
+                  <div style={{fontSize:10,fontWeight:800,color:tuningKey===k?"white":"#1E293B"}}>{t.label}</div>
+                  <div style={{fontSize:8,color:tuningKey===k?"rgba(255,255,255,.6)":"#94A3B8",letterSpacing:1,marginTop:1}}>{t.notes.join(" ")}</div>
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section label={`Positions (${voicings.length})`}>
+            <div style={{display:"flex",gap:16,marginBottom:10,paddingBottom:2}}>
+              <Toggle on={inversions} onClick={()=>setInversions(!inversions)} label="Renversements" color={chord.color}/>
+              <Toggle on={showNames} onClick={()=>setShowNames(!showNames)} label="Noms des notes" color={chord.color}/>
+            </div>
+            {voicings.length === 0 ? (
+              <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:12,padding:"12px 14px",fontSize:11,color:"#B91C1C",lineHeight:1.6}}>
+                Aucune position jouable pour <strong>{symbol}</strong> en {tuning.label} avec la fondamentale à la basse.
+                {!inversions && <> Active <strong>Renversements</strong> pour autoriser une autre note à la basse.</>}
+              </div>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(2, 1fr)",gap:9}}>
+                {voicings.map((v, i) => (
+                  <VoicingCard key={tabString(v.frets)} v={v} index={i} tuning={tuning.midi} color={chord.color} showNames={showNames}/>
+                ))}
+              </div>
+            )}
+            {inversions && voicings.some(v => v.bassPc !== root) && (
+              <div style={{fontSize:9,color:"#94A3B8",marginTop:8,lineHeight:1.5}}>
+                Certaines positions sont des renversements : la basse n'est pas {NOTES[root]} (notées {symbol}/x sur une grille).
+              </div>
+            )}
+          </Section>
+
+          <Section label="Composition de l'accord">
+            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+              {tones.map((t, i) => (
+                <div key={i} style={{display:"flex",alignItems:"center",padding:"7px 11px",background:i===0?chord.color+"18":"#F8FAFC",borderRadius:10,border:`1px solid ${i===0?chord.color+"40":"#F1F5F9"}`}}>
+                  <div style={{width:26,height:24,borderRadius:7,background:i===0?chord.color:"#E2E8F0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:i===0?"white":"#64748B",flexShrink:0,marginRight:10}}>{t.deg}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#0F172A"}}>{NOTES[t.pc]}</div>
+                    <div style={{fontSize:9,color:"#94A3B8"}}>{NOTES_EN[t.pc]} · {t.name} · +{t.iv} demi-tons</div>
+                  </div>
+                  {i === 0 && <div style={{fontSize:8,color:chord.color,fontWeight:700,background:chord.color+"18",padding:"2px 6px",borderRadius:5}}>Fondamentale</div>}
+                  {t.optional && <div style={{fontSize:8,color:"#94A3B8",fontWeight:700,background:"#F1F5F9",padding:"2px 6px",borderRadius:5}}>Facultative</div>}
+                </div>
+              ))}
+            </div>
+          </Section>
+
+          <div style={{background:"#0F172A",borderRadius:14,padding:"13px 15px"}}>
+            <div style={{fontSize:9,color:"#93C5FD",marginBottom:5,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>💡 Comment lire les grilles</div>
+            <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.65}}>
+              Les cordes vont de la plus grave (à gauche) à la plus aiguë. ✕ = corde étouffée, ○ = corde à vide, les chiffres dans les pastilles
+              indiquent les doigts (1 index → 4 auriculaire) et la barre pleine un barré. Le nombre à gauche de la grille donne la case de départ.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

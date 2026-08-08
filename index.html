@@ -205,7 +205,10 @@ function App(){
               <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>{NOTES[root]} {scale.label}</h1>
               <div style={{fontSize:10,color:"#475569",marginTop:2}}>{scale.genres}</div>
             </div>
-            <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
+            <div style={{display:"flex",gap:6}}>
+              <a href="accords.html" style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 10px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>Accords</a>
+              <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
+            </div>
           </div>
           <div style={{marginTop:12,display:"flex",gap:4,flexWrap:"wrap"}}>
             {scNotes.map((n,i)=>(
