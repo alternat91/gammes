@@ -2,10 +2,16 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Accords" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Générateur de positions d'accords de guitare : 29 types d'accords, 6 accordages, grilles avec doigté et écoute." />
+  <link rel="manifest" href="accords.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/accords-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/accords-192.png" />
   <title>Générateur d'accords de guitare</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -16,6 +22,12 @@
     ::-webkit-scrollbar { display: none; }
     button { -webkit-appearance: none; font-family: inherit; }
   </style>
+  <script>
+    // Installe l'application pour qu'elle fonctionne sans réseau
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
 </head>
 <body>
 <div id="root"></div>
@@ -91,6 +103,11 @@ const DEGREES = {
 
 const MAX_FRET = 15;
 const pc = m => ((m % 12) + 12) % 12;
+
+// Lancée depuis l'écran d'accueil : iOS affiche déjà sa vraie barre d'état,
+// on masque donc la barre factice et on libère la zone de sécurité.
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
 
 /* ------------------------------------------------------------------ */
 /*  Générateur : recherche et classement des positions jouables        */
@@ -454,8 +471,12 @@ function App() {
     <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
       <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
 
-        <div style={{background:"#0F172A",padding:"env(safe-area-inset-top, 14px) 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
-          <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+        <div style={{background:"#0F172A",paddingTop:"env(safe-area-inset-top, 0px)"}}>
+          {!IS_APP && (
+            <div style={{padding:"14px 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+              <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+            </div>
+          )}
         </div>
 
         <div style={{background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
@@ -493,7 +514,7 @@ function App() {
           </div>
         )}
 
-        <div style={{flex:1,padding:"14px 14px 40px"}}>
+        <div style={{flex:1,padding:"14px 14px calc(40px + env(safe-area-inset-bottom, 0px))"}}>
 
           <Section label="Tonique">
             <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>

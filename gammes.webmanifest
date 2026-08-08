@@ -1,0 +1,20 @@
+{
+  "name": "Révision des gammes",
+  "short_name": "Gammes",
+  "description": "25 gammes et modes affichés sur clavier, manche de guitare et de basse.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "index.html",
+  "scope": "./",
+  "id": "/gammes/gammes",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "categories": ["music", "education"],
+  "icons": [
+    { "src": "icons/gammes-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/gammes-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/gammes-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

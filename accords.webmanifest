@@ -1,0 +1,20 @@
+{
+  "name": "Accords de guitare",
+  "short_name": "Accords",
+  "description": "Générateur de positions d'accords de guitare : 29 types d'accords, 6 accordages, grilles avec doigté et écoute.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "accords.html",
+  "scope": "./",
+  "id": "/gammes/accords",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "categories": ["music", "education"],
+  "icons": [
+    { "src": "icons/accords-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/accords-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/accords-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

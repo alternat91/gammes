@@ -2,10 +2,16 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Gammes" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Révision des gammes : 25 gammes et modes sur clavier, manche de guitare et de basse." />
+  <link rel="manifest" href="gammes.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/gammes-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/gammes-192.png" />
   <title>Gammes</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -16,6 +22,12 @@
     ::-webkit-scrollbar { display: none; }
     button { -webkit-appearance: none; }
   </style>
+  <script>
+    // Installe l'application pour qu'elle fonctionne sans réseau
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
 </head>
 <body>
 <div id="root"></div>
@@ -76,6 +88,11 @@ const TIPS={
   guitare:(r,s)=>`Repère la fondamentale ${NOTES[r]} sur chaque corde. Monte et descends le pattern, puis explore en diagonale.`,
   basse:(r,s)=>`Joue la gamme de ${NOTES[r]} ${s} avec le métronome. Accentue les temps forts et explore les positions sur le manche.`,
 };
+
+// Lancée depuis l'écran d'accueil : iOS affiche déjà sa vraie barre d'état,
+// on masque donc la barre factice et on libère la zone de sécurité.
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
 
 function getScale(root,ivs){ return ivs.map(i=>(root+i)%12); }
 function nLabel(i){ return NOTES[i%12]; }
@@ -195,8 +212,12 @@ function App(){
   return (
     <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
       <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
-        <div style={{background:"#0F172A",padding:"env(safe-area-inset-top, 14px) 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
-          <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+        <div style={{background:"#0F172A",paddingTop:"env(safe-area-inset-top, 0px)"}}>
+          {!IS_APP && (
+            <div style={{padding:"14px 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+              <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+            </div>
+          )}
         </div>
         <div style={{background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -222,7 +243,7 @@ function App(){
           <strong>{scale.label}</strong> — {scale.description}<br/>
           <span style={{fontSize:10,color:"#3B82F6"}}>{scale.intervals.length} notes · Intervalles : {scale.intervals.join(" – ")}</span>
         </div>}
-        <div style={{flex:1,padding:"0 14px 40px"}}>
+        <div style={{flex:1,padding:"0 14px calc(40px + env(safe-area-inset-bottom, 0px))"}}>
           <div style={{display:"flex",background:"#F1F5F9",borderRadius:12,padding:3,margin:"12px 0"}}>
             {Object.entries(INSTRUMENTS).map(([k,v])=>(
               <button key={k} onClick={()=>setInst(k)} style={{flex:1,padding:"8px 2px",borderRadius:10,border:"none",background:inst===k?"white":"transparent",color:inst===k?"#0F172A":"#94A3B8",fontWeight:700,fontSize:11,cursor:"pointer",boxShadow:inst===k?"0 1px 4px rgba(0,0,0,.1)":"none",display:"flex",alignItems:"center",justifyContent:"center",gap:3}}>
