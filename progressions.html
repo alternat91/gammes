@@ -407,6 +407,49 @@ const TEMPOS = [
   { label:"Rapide", ms:480 },
 ];
 
+/* ------------------------------------------------------------------ */
+/*  Substitutions d'accords                                            */
+/* ------------------------------------------------------------------ */
+
+// Les substitutions possibles dépendent de la qualité *active* de l'accord
+// (après bascule triades/7es) : chacune n'est offerte que quand elle a un
+// sens harmonique réel, plutôt que proposée systématiquement.
+const SUBSTITUTIONS = {
+  tritone: { label:"Tritonique", short:"⇄ tritonique", appliesTo:["dom7"] },
+  relative:{ label:"Relatif",    short:"⇄ relatif",     appliesTo:["maj","maj7","min","min7"] },
+  parallel:{ label:"Parallèle",  short:"⇄ parallèle",   appliesTo:["maj","maj7","min","min7"] },
+};
+
+function availableSubs(quality) {
+  return Object.entries(SUBSTITUTIONS)
+    .filter(([, s]) => s.appliesTo.includes(quality))
+    .map(([key, s]) => ({ key, ...s }));
+}
+
+// Applique la substitution choisie à un accord (racine + qualité) et
+// renvoie le résultat ; 'none' ou une clé non applicable renvoient l'accord
+// d'origine inchangé.
+function applySub(root, quality, subKey) {
+  if (subKey === "tritone" && quality === "dom7") {
+    return { root:(root + 6) % 12, quality };
+  }
+  if (subKey === "relative") {
+    if (quality === "maj" || quality === "maj7") {
+      return { root:(root + 9) % 12, quality: quality === "maj7" ? "min7" : "min" };
+    }
+    if (quality === "min" || quality === "min7") {
+      return { root:(root + 3) % 12, quality: quality === "min7" ? "maj7" : "maj" };
+    }
+  }
+  if (subKey === "parallel") {
+    if (quality === "maj") return { root, quality:"min" };
+    if (quality === "maj7") return { root, quality:"min7" };
+    if (quality === "min") return { root, quality:"maj" };
+    if (quality === "min7") return { root, quality:"maj7" };
+  }
+  return { root, quality };
+}
+
 // Zones du manche : "auto" garde la position la plus facile pour chaque
 // accord ; les autres imposent une case de départ cible, en piochant parmi
 // les positions déjà générées celle qui s'en rapproche le plus.
@@ -470,17 +513,20 @@ function ProgCard({ p, selected, accent, onClick }) {
   );
 }
 
-function ChordSlot({ step, chord, posIdx, onCycle, active, tuning }) {
+function ChordSlot({ step, chord, posIdx, onCycle, active, tuning, onSetSub }) {
   const v = chord.voicings[posIdx] || chord.voicings[0];
   const color = CHORD_TYPES[chord.qualityKey].color;
+  const subbed = chord.subKey !== "none";
   return (
     <div style={{
-      background:"#F8FAFC", border:`2px solid ${active?color:"#E2E8F0"}`, borderRadius:14,
+      background:"#F8FAFC", border:`2px solid ${active?color:subbed?color+"80":"#E2E8F0"}`, borderRadius:14,
       padding:"9px 9px 7px", width:118, flexShrink:0, transition:"border-color .15s",
       boxShadow:active?`0 0 0 3px ${color}33`:"none",
     }}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:2}}>
-        <div style={{fontSize:12,fontWeight:800,color:"#0F172A"}}>{step.rn}</div>
+        <div style={{fontSize:12,fontWeight:800,color:subbed?"#94A3B8":"#0F172A"}}>
+          {step.rn}{subbed && <span style={{fontSize:8,fontWeight:700,color}}> ⇄</span>}
+        </div>
         <div style={{fontSize:10,fontWeight:700,color}}>{chord.symbol}</div>
       </div>
       {v ? (
@@ -496,11 +542,19 @@ function ChordSlot({ step, chord, posIdx, onCycle, active, tuning }) {
             )}
           </div>
           {chord.voicings.length > 1 && (
-            <div style={{fontSize:7,color:"#CBD5E1",marginTop:2,textAlign:"right"}}>position {posIdx+1}/{chord.voicings.length}</div>
+            <div style={{fontSize:7,color:"#CBD5E1",marginTop:1,textAlign:"right"}}>position {posIdx+1}/{chord.voicings.length}</div>
           )}
         </React.Fragment>
       ) : (
         <div style={{fontSize:9,color:"#B91C1C",padding:"10px 0",textAlign:"center"}}>aucune position</div>
+      )}
+      {chord.subOptions.length > 0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:6,paddingTop:6,borderTop:"1px solid #E2E8F0"}}>
+          <button onClick={()=>onSetSub("none")} style={{border:"none",borderRadius:5,padding:"2px 5px",fontSize:7,fontWeight:700,cursor:"pointer",background:!subbed?"#0F172A":"#E2E8F0",color:!subbed?"white":"#64748B"}}>Orig.</button>
+          {chord.subOptions.map(o => (
+            <button key={o.key} onClick={()=>onSetSub(o.key)} style={{border:"none",borderRadius:5,padding:"2px 5px",fontSize:7,fontWeight:700,cursor:"pointer",background:chord.subKey===o.key?color:"#E2E8F0",color:chord.subKey===o.key?"white":"#64748B"}}>{o.label}</button>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -523,6 +577,7 @@ function App() {
   const accent = PROGRESSION_CATEGORIES[cat].color;
 
   const [zoneIdx, setZoneIdx] = useState(0);
+  const [subs, setSubs] = useState({}); // stepIndex -> 'tritone' | 'relative' | 'parallel'
 
   // les positions sont recherchées directement autour de la case cible
   // (zone du manche choisie) plutôt que filtrées après coup dans une liste
@@ -532,19 +587,33 @@ function App() {
     const scale = prog.mode === "minor" ? NATURAL_MINOR : MAJOR_SCALE;
     const zone = POSITION_ZONES[zoneIdx];
     const targetFret = zone.range ? (zone.range[0] + zone.range[1]) / 2 : null;
-    return prog.steps.map(s => {
+    return prog.steps.map((s, i) => {
       const semitones = s.raw !== undefined ? s.raw : scale[s.d];
-      const root = (key + semitones) % 12;
-      const qualityKey = seventh ? s.sevenQ : s.triadQ;
+      const baseRoot = (key + semitones) % 12;
+      const baseQuality = seventh ? s.sevenQ : s.triadQ;
+      const subOptions = availableSubs(baseQuality);
+      // une substitution mémorisée peut ne plus s'appliquer si la qualité de
+      // base a changé entre-temps (bascule triades/7es) : on l'ignore alors
+      const subKey = subOptions.some(o => o.key === subs[i]) ? subs[i] : "none";
+      const { root, quality: qualityKey } = applySub(baseRoot, baseQuality, subKey);
       let voicings = generateVoicings(root, qualityKey, tuning.midi, { max:8, targetFret });
       if (!voicings.length) voicings = generateVoicings(root, qualityKey, tuning.midi, { max:8, targetFret, inversions:true });
-      return { root, qualityKey, symbol: NOTES_EN[root] + CHORD_TYPES[qualityKey].sym, voicings };
+      return { root, qualityKey, symbol: NOTES_EN[root] + CHORD_TYPES[qualityKey].sym, voicings, subKey, subOptions };
     });
-  }, [key, progKey, tuningKey, seventh, zoneIdx]);
+  }, [key, progKey, tuningKey, seventh, zoneIdx, subs]);
 
   // repart de la position #1 (la plus proche de la zone choisie) à chaque
   // changement de contexte ; les flèches ‹ › restent une bascule fine
   useEffect(() => { setPosIdx({}); setActiveStep(-1); }, [key, progKey, tuningKey, seventh, zoneIdx]);
+  // les substitutions sont des choix harmoniques (fonction/qualité), pas des
+  // hauteurs fixes : elles restent valables si on change de tonalité,
+  // d'accordage ou de zone, et ne repartent à zéro que sur une autre suite
+  useEffect(() => { setSubs({}); }, [progKey]);
+
+  function setSub(i, subKey) {
+    setSubs(s => ({ ...s, [i]: subKey }));
+    setPosIdx(p => ({ ...p, [i]: 0 }));
+  }
 
   function selectProg(catKey, pk) {
     setCat(catKey);
@@ -604,7 +673,8 @@ function App() {
             <strong>{prog.label}</strong> — {prog.description}<br/>
             <span style={{fontSize:10,color:"#3B82F6"}}>
               « Position sur le manche » déplace toute la suite vers une zone du manche en une fois ; les flèches ‹ › sous une grille
-              affinent un seul accord. Le bouton ▶ joue la suite dans l'ordre, à la vitesse choisie.
+              affinent un seul accord. Les pastilles sous chaque grille proposent des substitutions (tritonique, relative, parallèle)
+              pour recolorer un accord sans changer sa fonction dans la suite. Le bouton ▶ joue la suite dans l'ordre, à la vitesse choisie.
             </span>
           </div>
         )}
@@ -668,6 +738,7 @@ function App() {
                     posIdx={posIdx[i] || 0}
                     active={activeStep===i}
                     onCycle={dir=>cycle(i, dir)}
+                    onSetSub={subKey=>setSub(i, subKey)}
                     tuning={tuning.midi}
                   />
                 </React.Fragment>
@@ -691,8 +762,11 @@ function App() {
             <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.65}}>
               Les chiffres romains (I, ii, V…) indiquent la fonction de chaque accord dans la tonalité choisie ; les flèches entre les
               grilles montrent l'ordre de jeu. « Position sur le manche » déplace toute la suite vers une zone donnée (cordes à vide,
-              case 5, case 9…) ; les flèches ‹ › sous une grille affinent ensuite un accord précis. « Avec 7es » bascule entre triades
-              simples et accords de septième.
+              case 5, case 9…) ; les flèches ‹ › sous une grille affinent ensuite un accord précis. Sous chaque grille, les pastilles
+              <strong> Tritonique</strong> (remplace une dominante par celle à un triton, ex. G7 → D♭7), <strong>Relatif</strong>
+              (bascule entre un accord et son relatif majeur/mineur) et <strong>Parallèle</strong> (bascule majeur/mineur sur la même
+              fondamentale) proposent des substitutions courantes sans changer la fonction de l'accord dans la suite. « Avec 7es »
+              bascule entre triades simples et accords de septième.
             </div>
           </div>
         </div>

@@ -62,3 +62,19 @@ Rapide), avec la grille en cours de lecture mise en évidence.
 Les cadences empruntées (comme le V majeur d'une cadence andalouse en tonalité mineure, ou le ♭VII
 d'une couleur mixolydienne) sont écrites explicitement plutôt que déduites d'une table générique,
 pour rester justes même quand elles s'écartent de la gamme diatonique.
+
+### Substitutions d'accords
+
+Sous chaque grille, des pastilles proposent de remplacer l'accord par une substitution courante —
+sans changer sa fonction dans la suite (le chiffrage romain reste affiché, avec un badge ⇄) :
+
+- **Tritonique** — remplace une dominante par celle à un triton (ex. G7 → D♭7), disponible
+  uniquement sur les accords de septième de dominante.
+- **Relatif** — bascule entre un accord et son relatif majeur ou mineur (ex. Dm7 → Fmaj7).
+- **Parallèle** — bascule majeur/mineur sur la même fondamentale (ex. Cmaj7 → Cm7).
+
+Chaque substitution est un choix harmonique (fonction et qualité), pas une hauteur figée : elle
+reste active si tu changes de tonalité, d'accordage ou de zone du manche, et ne repart à zéro que
+si tu choisis une autre suite. Les accords diminués et demi-diminués (ii° d'un turnaround mineur,
+par exemple) n'affichent aucune substitution : leur reharmonisation dépend trop du contexte pour
+une règle générique fiable.
