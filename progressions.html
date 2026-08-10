@@ -166,8 +166,15 @@ function generateVoicings(rootPc, typeKey, tuningMidi, opts = {}) {
       if (d === 1 && midis[i] < 58) clash += 1;
       else if (d === 2 && midis[i] < 52) clash += 0.5;
     }
-    let cost = a.minFret * 0.55 + (a.maxFret - a.minFret) * 1.1 + a.fingers * 0.9
-             + muted * 1.6 + holes * 4 + missing * 1.2 + clash * 2.5 - a.opens.length * 0.7;
+    // sans cible : favorise le bas du manche et les cordes à vide ; avec une
+    // case cible (zone du manche choisie), favorise plutôt la proximité de
+    // cette case, pour que chaque zone renvoie de vraies positions locales
+    // et pas seulement les moins chères globalement
+    const posCost = opts.targetFret != null
+      ? Math.abs(a.minFret - opts.targetFret) * 0.9
+      : a.minFret * 0.55 - a.opens.length * 0.7;
+    let cost = posCost + (a.maxFret - a.minFret) * 1.1 + a.fingers * 0.9
+             + muted * 1.6 + holes * 4 + missing * 1.2 + clash * 2.5;
     if (bassPc !== rootPc) cost += 3.5;
     if (a.barre) cost += 0.6;
     return { ...o, cost, midis };
@@ -323,7 +330,15 @@ const NATURAL_MINOR = [0,2,3,5,7,8,10];
 // Chaque étape porte son propre chiffrage romain (rn) : ça permet d'écrire
 // correctement les accords empruntés (ex. le V majeur d'une cadence andalouse
 // en mineur), sans avoir à déduire la qualité d'une table générique.
-const ST = (d, triadQ, sevenQ, rn) => ({ d, triadQ, sevenQ, rn });
+// ST : degré diatonique (0-6) de la gamme du mode, avec une qualité choisie
+// librement (elle peut différer de la qualité "attendue" pour ce degré — un
+// emprunt comme le III majeur de "I-III-IV-iv" reste sur un degré diatonique,
+// seule sa couleur change).
+const ST = (d, triadQ, sevenQ, rn) => ({ d, triadQ, sevenQ, rn, num:String(d + 1) });
+// BORROW : accord chromatique dont la fondamentale n'existe pas dans la
+// gamme du mode (ex. le ♭VII d'un emprunt mixolydien), donnée directement en
+// demi-tons depuis la tonique.
+const BORROW = (raw, triadQ, sevenQ, rn, num) => ({ raw, triadQ, sevenQ, rn, num });
 
 const PROGRESSION_CATEGORIES = {
   pop: { label:"Pop & Rock", color:"#4F8EF7", progressions:{
@@ -362,18 +377,46 @@ const PROGRESSION_CATEGORIES = {
     p251m: { label:"Turnaround mineur", mode:"minor", description:"L'équivalent mineur du ii–V–I", genres:"Jazz mineur",
       steps:[ ST(1,'dim','m7b5','ii°'), ST(4,'maj','dom7','V'), ST(0,'min','min7','i') ] },
   }},
+  emprunts: { label:"Emprunts", color:"#6366F1", progressions:{
+    mixo: { label:"Couleur mixolydienne", mode:"major", description:"Le ♭VII emprunté au mode mixolydien, incontournable en rock", genres:"Rock, Southern rock",
+      steps:[ ST(0,'maj','maj7','I'), BORROW(10,'maj','dom7','♭VII','♭7'), ST(3,'maj','maj7','IV'), ST(0,'maj','maj7','I') ] },
+    chromdesc: { label:"Descente chromatique", mode:"major", description:"III majeur puis iv mineur emprunté : une voix intérieure descend par demi-ton, couleur mélancolique bien connue", genres:"Pop alternative, Rock",
+      steps:[ ST(0,'maj','maj7','I'), ST(2,'maj','dom7','III'), ST(3,'maj','maj7','IV'), ST(3,'min','min7','iv') ] },
+    rockborrow: { label:"Cadence rock empruntée", mode:"major", description:"♭VI et ♭VII empruntés au mineur parallèle, couleur puissante", genres:"Rock, Metal",
+      steps:[ ST(0,'maj','maj7','I'), BORROW(8,'maj','maj7','♭VI','♭6'), BORROW(10,'maj','dom7','♭VII','♭7'), ST(0,'maj','maj7','I') ] },
+  }},
+  ballades: { label:"Ballades", color:"#EC4899", progressions:{
+    montee: { label:"Montée diatonique", mode:"major", description:"Enchaînement ascendant très utilisé en pont de chanson", genres:"Pop, Ballade",
+      steps:[ ST(0,'maj','maj7','I'), ST(1,'min','min7','ii'), ST(2,'min','min7','iii'), ST(3,'maj','maj7','IV') ] },
+    tierce: { label:"Couleur en tierce", mode:"major", description:"I monte à sa tierce (iii) avant de redescendre par IV, couleur lumineuse", genres:"Ballade, Pop",
+      steps:[ ST(0,'maj','maj7','I'), ST(2,'min','min7','iii'), ST(3,'maj','maj7','IV'), ST(0,'maj','maj7','I') ] },
+    berceuse: { label:"Boucle berceuse", mode:"major", description:"Simple aller-retour I-V-IV-V, très employé en folk et en berceuse", genres:"Ballade, Folk",
+      steps:[ ST(0,'maj','maj7','I'), ST(4,'maj','dom7','V'), ST(3,'maj','maj7','IV'), ST(4,'maj','dom7','V') ] },
+  }},
 };
 
 const ALL_PROGRESSIONS = Object.entries(PROGRESSION_CATEGORIES)
   .reduce((a, [ck, c]) => ({ ...a, ...Object.fromEntries(Object.keys(c.progressions).map(pk => [pk, ck])) }), {});
 
 const romanOf   = p => p.steps.map(s => s.rn).join("–");
-const numericOf = p => p.steps.map(s => s.d + 1).join("-");
+const numericOf = p => p.steps.map(s => s.num).join("-");
 
 const TEMPOS = [
   { label:"Lent",   ms:950 },
   { label:"Moyen",  ms:700 },
   { label:"Rapide", ms:480 },
+];
+
+// Zones du manche : "auto" garde la position la plus facile pour chaque
+// accord ; les autres imposent une case de départ cible, en piochant parmi
+// les positions déjà générées celle qui s'en rapproche le plus.
+const POSITION_ZONES = [
+  { key:"auto",  label:"La plus facile", range:null },
+  { key:"open",  label:"Ouvertes",       range:[0,3] },
+  { key:"z3",    label:"Case 3",         range:[2,5] },
+  { key:"z5",    label:"Case 5",         range:[4,7] },
+  { key:"z7",    label:"Case 7",         range:[6,9] },
+  { key:"z9",    label:"Case 9",         range:[8,12] },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -479,19 +522,29 @@ function App() {
   const prog = PROGRESSION_CATEGORIES[cat].progressions[progKey];
   const accent = PROGRESSION_CATEGORIES[cat].color;
 
-  // repart d'une position #1 propre à chaque changement de contexte
-  useEffect(() => { setPosIdx({}); setActiveStep(-1); }, [progKey, key, tuningKey, seventh]);
+  const [zoneIdx, setZoneIdx] = useState(0);
 
+  // les positions sont recherchées directement autour de la case cible
+  // (zone du manche choisie) plutôt que filtrées après coup dans une liste
+  // fixe : chaque zone renvoie donc de vraies positions locales, même sur
+  // un accord dont la forme la plus facile est ailleurs sur le manche
   const chords = useMemo(() => {
     const scale = prog.mode === "minor" ? NATURAL_MINOR : MAJOR_SCALE;
+    const zone = POSITION_ZONES[zoneIdx];
+    const targetFret = zone.range ? (zone.range[0] + zone.range[1]) / 2 : null;
     return prog.steps.map(s => {
-      const root = (key + scale[s.d]) % 12;
+      const semitones = s.raw !== undefined ? s.raw : scale[s.d];
+      const root = (key + semitones) % 12;
       const qualityKey = seventh ? s.sevenQ : s.triadQ;
-      let voicings = generateVoicings(root, qualityKey, tuning.midi, { max:5 });
-      if (!voicings.length) voicings = generateVoicings(root, qualityKey, tuning.midi, { max:5, inversions:true });
+      let voicings = generateVoicings(root, qualityKey, tuning.midi, { max:8, targetFret });
+      if (!voicings.length) voicings = generateVoicings(root, qualityKey, tuning.midi, { max:8, targetFret, inversions:true });
       return { root, qualityKey, symbol: NOTES_EN[root] + CHORD_TYPES[qualityKey].sym, voicings };
     });
-  }, [key, progKey, tuningKey, seventh]);
+  }, [key, progKey, tuningKey, seventh, zoneIdx]);
+
+  // repart de la position #1 (la plus proche de la zone choisie) à chaque
+  // changement de contexte ; les flèches ‹ › restent une bascule fine
+  useEffect(() => { setPosIdx({}); setActiveStep(-1); }, [key, progKey, tuningKey, seventh, zoneIdx]);
 
   function selectProg(catKey, pk) {
     setCat(catKey);
@@ -550,8 +603,8 @@ function App() {
           <div style={{background:"#EFF6FF",borderBottom:"1px solid #BFDBFE",padding:"11px 18px",fontSize:11,color:"#1E40AF",lineHeight:1.6}}>
             <strong>{prog.label}</strong> — {prog.description}<br/>
             <span style={{fontSize:10,color:"#3B82F6"}}>
-              Chaque accord affiche sa meilleure position ; utilise les flèches ‹ › sous une grille pour essayer une autre case du manche.
-              Le bouton ▶ joue la suite dans l'ordre, à la vitesse choisie.
+              « Position sur le manche » déplace toute la suite vers une zone du manche en une fois ; les flèches ‹ › sous une grille
+              affinent un seul accord. Le bouton ▶ joue la suite dans l'ordre, à la vitesse choisie.
             </span>
           </div>
         )}
@@ -586,6 +639,14 @@ function App() {
                   <div style={{fontSize:10,fontWeight:800,color:tuningKey===k?"white":"#1E293B"}}>{t.label}</div>
                   <div style={{fontSize:8,color:tuningKey===k?"rgba(255,255,255,.6)":"#94A3B8",letterSpacing:1,marginTop:1}}>{t.notes.join(" ")}</div>
                 </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Position sur le manche">
+            <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:3}}>
+              {POSITION_ZONES.map((z, i) => (
+                <button key={z.key} onClick={()=>setZoneIdx(i)} style={{padding:"7px 12px",borderRadius:10,border:`2px solid ${zoneIdx===i?accent:"#E2E8F0"}`,background:zoneIdx===i?accent:"#F8FAFC",color:zoneIdx===i?"white":"#1E293B",fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>{z.label}</button>
               ))}
             </div>
           </Section>
@@ -628,9 +689,10 @@ function App() {
           <div style={{background:"#0F172A",borderRadius:14,padding:"13px 15px"}}>
             <div style={{fontSize:9,color:"#93C5FD",marginBottom:5,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>💡 Comment lire la séquence</div>
             <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.65}}>
-              Les chiffres romains (I, ii, V…) indiquent la fonction de chaque accord dans la tonalité choisie ; les flèches montrent
-              l'ordre de jeu. « Avec 7es » bascule entre triades simples et accords de septième (utile pour les grilles jazz).
-              Chaque grille propose sa meilleure position, mais tu peux basculer sur une autre case du manche avec ‹ ›.
+              Les chiffres romains (I, ii, V…) indiquent la fonction de chaque accord dans la tonalité choisie ; les flèches entre les
+              grilles montrent l'ordre de jeu. « Position sur le manche » déplace toute la suite vers une zone donnée (cordes à vide,
+              case 5, case 9…) ; les flèches ‹ › sous une grille affinent ensuite un accord précis. « Avec 7es » bascule entre triades
+              simples et accords de septième.
             </div>
           </div>
         </div>

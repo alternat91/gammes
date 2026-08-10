@@ -43,17 +43,22 @@ synthétisées à la volée (Karplus-Strong via l'API Web Audio), sans aucun fic
 
 ## Les suites d'accords
 
-Choisis une tonalité et une suite (rangée par style : Pop & Rock, Jazz, Blues, Mineur), et la page
-affiche chaque accord de la grille avec sa meilleure position, chaînés par une flèche dans l'ordre
-de jeu. Chaque case affiche son chiffrage romain (ii, V, I…) — calculé à partir de la tonalité, pas
-mémorisé — et son symbole d'accord.
+Choisis une tonalité et une suite (rangée par style : Pop & Rock, Jazz, Blues, Mineur, Emprunts,
+Ballades — 22 suites au total), et la page affiche chaque accord de la grille avec sa meilleure
+position, chaînés par une flèche dans l'ordre de jeu. Chaque case affiche son chiffrage romain
+(ii, V, I…) — calculé à partir de la tonalité, pas mémorisé — et son symbole d'accord.
+
+**Position sur le manche** déplace toute la suite vers une zone donnée (cordes à vide, case 3, 5,
+7, 9…) en une seule action : plutôt que de filtrer une liste de positions déjà calculée, la
+recherche de doigtés est relancée en ciblant directement cette case, pour que chaque zone renvoie
+de vraies positions locales même sur un accord dont la forme la plus facile se trouve ailleurs sur
+le manche. Les flèches ‹ › sous une grille affinent ensuite un seul accord, sans toucher aux autres.
 
 Le toggle **Avec 7es** bascule chaque accord entre triade simple et accord de septième diatonique
 (dominante sur le V, majeur 7 ou mineur 7 ailleurs) — utile pour retrouver le son des grilles jazz.
-Les flèches ‹ › sous une grille permettent d'essayer une autre position sur le manche sans changer
-d'accord. Le bouton **▶ Jouer la suite** joue les accords dans l'ordre, à la vitesse choisie (Lent,
-Moyen, Rapide), avec la grille en cours de lecture mise en évidence.
+Le bouton **▶ Jouer la suite** joue les accords dans l'ordre, à la vitesse choisie (Lent, Moyen,
+Rapide), avec la grille en cours de lecture mise en évidence.
 
-Les cadences empruntées (comme le V majeur d'une cadence andalouse en tonalité mineure) sont
-écrites explicitement plutôt que déduites d'une table générique, pour rester justes même quand
-elles s'écartent de la gamme diatonique.
+Les cadences empruntées (comme le V majeur d'une cadence andalouse en tonalité mineure, ou le ♭VII
+d'une couleur mixolydienne) sont écrites explicitement plutôt que déduites d'une table générique,
+pour rester justes même quand elles s'écartent de la gamme diatonique.
