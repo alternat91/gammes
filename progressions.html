@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Suites" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Doigtés d'accords de guitare pour des suites typiques : 2-5-1, 1-6-4-5, cadence andalouse, blues 12 mesures..." />
+  <link rel="manifest" href="progressions.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/progressions-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/progressions-192.png" />
+  <title>Suites d'accords de guitare</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #E8EDF5; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; overscroll-behavior: none; }
+    ::-webkit-scrollbar { display: none; }
+    button { -webkit-appearance: none; font-family: inherit; }
+  </style>
+  <script>
+    // Installe l'application pour qu'elle fonctionne sans réseau
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+const NOTES    = ["Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
+const NOTES_EN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+/* ------------------------------------------------------------------ */
+/*  Accords utilisés dans les suites (mêmes définitions et couleurs     */
+/*  que accords.html, pour rester visuellement cohérent entre pages)    */
+/* ------------------------------------------------------------------ */
+
+const CHORD_TYPES = {
+  maj:  { sym:"",     intervals:[0,4,7],          color:"#4F8EF7" },
+  min:  { sym:"m",    intervals:[0,3,7],          color:"#8B5CF6" },
+  dim:  { sym:"dim",  intervals:[0,3,6],          color:"#7C3AED" },
+  dom7: { sym:"7",    intervals:[0,4,7,10], optional:[7], color:"#F59E0B" },
+  maj7: { sym:"maj7", intervals:[0,4,7,11], optional:[7], color:"#10B981" },
+  min7: { sym:"m7",   intervals:[0,3,7,10], optional:[7], color:"#8B5CF6" },
+  m7b5: { sym:"m7b5", intervals:[0,3,6,10],       color:"#6D28D9" },
+};
+
+const TUNINGS = {
+  standard: { label:"Standard",   notes:["E","A","D","G","B","E"],    midi:[40,45,50,55,59,64] },
+  dropd:    { label:"Drop D",     notes:["D","A","D","G","B","E"],    midi:[38,45,50,55,59,64] },
+  halfdown: { label:"½ ton bas",  notes:["E♭","A♭","D♭","G♭","B♭","E♭"], midi:[39,44,49,54,58,63] },
+  dadgad:   { label:"DADGAD",     notes:["D","A","D","G","A","D"],    midi:[38,45,50,55,57,62] },
+  openg:    { label:"Open G",     notes:["D","G","D","G","B","D"],    midi:[38,43,50,55,59,62] },
+  opend:    { label:"Open D",     notes:["D","A","D","F#","A","D"],   midi:[38,45,50,54,57,62] },
+};
+
+const MAX_FRET = 15;
+const pc = m => ((m % 12) + 12) % 12;
+
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
+
+/* ------------------------------------------------------------------ */
+/*  Générateur de positions (identique à accords.html)                 */
+/* ------------------------------------------------------------------ */
+
+function analyze(v, tuning) {
+  const sounded = [];
+  for (let s = 0; s < v.length; s++) if (v[s] !== null) sounded.push(s);
+  const fretted = sounded.filter(s => v[s] > 0);
+  const opens = sounded.filter(s => v[s] === 0);
+  if (!fretted.length) return { fingers:0, barre:null, minFret:0, maxFret:0, sounded, opens };
+
+  const minFret = Math.min(...fretted.map(s => v[s]));
+  const maxFret = Math.max(...fretted.map(s => v[s]));
+  const atMin = fretted.filter(s => v[s] === minFret);
+
+  let barre = null;
+  if (atMin.length >= 2) {
+    const from = atMin[0], to = atMin[atMin.length - 1];
+    if (!opens.some(s => s > from && s < to)) barre = { fret:minFret, from, to };
+  }
+  const fingers = barre ? 1 + fretted.filter(s => v[s] > minFret).length : fretted.length;
+  return { fingers, barre, minFret, maxFret, sounded, opens };
+}
+
+function fingering(v, a) {
+  const fing = v.map(() => 0);
+  if (!a.fingers) return fing;
+  let next = 1;
+  let rest = a.sounded.filter(s => v[s] > 0);
+  if (a.barre) {
+    rest.filter(s => v[s] === a.barre.fret).forEach(s => { fing[s] = 1; });
+    rest = rest.filter(s => v[s] > a.barre.fret);
+    next = 2;
+  }
+  rest.sort((x, y) => v[x] - v[y] || x - y).forEach(s => { fing[s] = Math.min(next++, 4); });
+  return fing;
+}
+
+function generateVoicings(rootPc, typeKey, tuningMidi, opts = {}) {
+  const t = CHORD_TYPES[typeKey];
+  const N = tuningMidi.length;
+  const allowInversion = !!opts.inversions;
+  const maxResults = opts.max || 8;
+
+  const tones = t.intervals.map(iv => ({ iv, pc:(rootPc + iv) % 12, optional:(t.optional || []).includes(iv) }));
+  const chordPcs = new Set(tones.map(x => x.pc));
+  const requiredPcs = [...new Set(tones.filter(x => !x.optional).map(x => x.pc))];
+  const minSounded = Math.max(3, requiredPcs.length);
+  const found = new Map();
+
+  for (let w = 0; w <= 12; w++) {
+    const lo = w === 0 ? 0 : w;
+    const cands = [];
+    for (let s = 0; s < N; s++) {
+      const list = [null];
+      for (let f = lo; f <= Math.min(w + 3, MAX_FRET); f++) {
+        if (chordPcs.has(pc(tuningMidi[s] + f))) list.push(f);
+      }
+      if (w > 0 && w <= 4 && chordPcs.has(pc(tuningMidi[s]))) list.unshift(0);
+      cands.push(list);
+    }
+
+    const cur = new Array(N).fill(null);
+    (function dfs(s) {
+      if (s === N) {
+        const v = cur.slice();
+        if (v.filter(x => x !== null).length < minSounded) return;
+        const pcs = new Set();
+        v.forEach((f, i) => { if (f !== null) pcs.add(pc(tuningMidi[i] + f)); });
+        if (!requiredPcs.every(p => pcs.has(p))) return;
+        const bass = v.findIndex(x => x !== null);
+        const bassPc = pc(tuningMidi[bass] + v[bass]);
+        if (!allowInversion && bassPc !== rootPc) return;
+        const a = analyze(v, tuningMidi);
+        if (a.fingers > 4) return;
+        let holes = 0;
+        for (let i = a.sounded[0]; i < a.sounded[a.sounded.length - 1]; i++) if (v[i] === null) holes++;
+        if (holes > 1) return;
+        const key = v.map(x => (x === null ? "x" : x)).join(".");
+        if (!found.has(key)) found.set(key, { v, a, holes, bassPc, pcs });
+        return;
+      }
+      for (const f of cands[s]) { cur[s] = f; dfs(s + 1); }
+      cur[s] = null;
+    })(0);
+  }
+
+  const scored = [...found.values()].map(o => {
+    const { v, a, holes, bassPc, pcs } = o;
+    const muted = v.filter(x => x === null).length;
+    const missing = tones.filter(x => x.optional && !pcs.has(x.pc)).length;
+    const midis = [];
+    v.forEach((f, i) => { if (f !== null) midis.push(tuningMidi[i] + f); });
+    let clash = 0;
+    for (let i = 1; i < midis.length; i++) {
+      const d = midis[i] - midis[i - 1];
+      if (d === 1 && midis[i] < 58) clash += 1;
+      else if (d === 2 && midis[i] < 52) clash += 0.5;
+    }
+    let cost = a.minFret * 0.55 + (a.maxFret - a.minFret) * 1.1 + a.fingers * 0.9
+             + muted * 1.6 + holes * 4 + missing * 1.2 + clash * 2.5 - a.opens.length * 0.7;
+    if (bassPc !== rootPc) cost += 3.5;
+    if (a.barre) cost += 0.6;
+    return { ...o, cost, midis };
+  }).sort((x, y) => x.cost - y.cost);
+
+  const isSubsetOf = (b, a) => b.every((f, i) => f === a[i] || f === null);
+
+  const perPos = {}, out = [];
+  for (const c of scored) {
+    const p = c.a.minFret;
+    if (perPos[p] >= 2) continue;
+    if (out.some(k => isSubsetOf(c.v, k.v) || isSubsetOf(k.v, c.v))) continue;
+    perPos[p] = (perPos[p] || 0) + 1;
+    out.push(c);
+    if (out.length >= maxResults) break;
+  }
+
+  return out.map(c => ({
+    frets: c.v,
+    fingers: fingering(c.v, c.a),
+    barre: c.a.barre,
+    minFret: c.a.minFret,
+    maxFret: c.a.maxFret,
+    midis: c.midis,
+    bassPc: c.bassPc,
+  }));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audio (identique à accords.html)                                   */
+/* ------------------------------------------------------------------ */
+
+let audioCtx = null;
+function getCtx() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+
+function pluckBuffer(ctx, freq, dur) {
+  const sr = ctx.sampleRate;
+  const period = Math.max(2, Math.round(sr / freq));
+  const len = Math.floor(sr * dur);
+  const buf = ctx.createBuffer(1, len, sr);
+  const out = buf.getChannelData(0);
+  const wt = new Float32Array(period);
+  for (let i = 0; i < period; i++) wt[i] = Math.random() * 2 - 1;
+  let idx = 0;
+  for (let i = 0; i < len; i++) {
+    const cur = wt[idx], nxt = wt[(idx + 1) % period];
+    wt[idx] = (cur + nxt) * 0.5 * 0.9965;
+    out[i] = cur * (1 - i / len);
+    idx = (idx + 1) % period;
+  }
+  return buf;
+}
+
+function strum(midis, { down = true } = {}) {
+  const ctx = getCtx();
+  if (!ctx) return;
+  const master = ctx.createGain();
+  master.gain.value = 0.5;
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass"; lp.frequency.value = 3800;
+  master.connect(lp); lp.connect(ctx.destination);
+
+  const order = down ? midis : [...midis].reverse();
+  order.forEach((m, i) => {
+    const freq = 440 * Math.pow(2, (m - 69) / 12);
+    const src = ctx.createBufferSource();
+    src.buffer = pluckBuffer(ctx, freq, 2.2);
+    const g = ctx.createGain();
+    g.gain.value = 0.9 / Math.sqrt(order.length);
+    src.connect(g); g.connect(master);
+    src.start(ctx.currentTime + i * 0.035);
+    src.stop(ctx.currentTime + i * 0.035 + 2.2);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Diagramme d'accord (identique à accords.html)                      */
+/* ------------------------------------------------------------------ */
+
+function ChordDiagram({ frets, fingers, barre, minFret, maxFret, tuning, color, showNames }) {
+  const N = frets.length;
+  const SHOWN = 5;
+  const start = maxFret <= SHOWN - 1 ? 1 : minFret;
+  const SX = 17, SY = 19, OX = 23, OY = 20;
+  const W = OX + (N - 1) * SX + 12;
+  const H = OY + SHOWN * SY + (showNames ? 14 : 5);
+  const x = s => OX + s * SX;
+  const y = f => OY + (f - start) * SY;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block"}}>
+      {Array.from({length:SHOWN + 1}, (_, j) => (
+        <line key={"f"+j} x1={x(0)} y1={OY + j*SY} x2={x(N-1)} y2={OY + j*SY} stroke="#CBD5E1" strokeWidth={j===0 && start===1 ? 0 : 1}/>
+      ))}
+      {start === 1 && <rect x={x(0)-1} y={OY-3} width={(N-1)*SX+2} height={4} rx={1} fill="#0F172A"/>}
+      {start > 1 && <text x={x(0)-11} y={OY+13} textAnchor="end" fontSize="9" fontWeight="700" fill="#94A3B8">{start}</text>}
+
+      {frets.map((f, s) => (
+        <line key={"s"+s} x1={x(s)} y1={OY} x2={x(s)} y2={OY + SHOWN*SY} stroke="#94A3B8" strokeWidth={0.6 + (N-1-s)*0.22}/>
+      ))}
+
+      {frets.map((f, s) => f === null
+        ? <text key={"x"+s} x={x(s)} y={OY-7} textAnchor="middle" fontSize="9" fontWeight="700" fill="#CBD5E1">✕</text>
+        : f === 0
+          ? <circle key={"o"+s} cx={x(s)} cy={OY-10} r={3.6} fill="none" stroke={color} strokeWidth="1.6"/>
+          : null)}
+
+      {barre && barre.fret >= start && (
+        <rect x={x(barre.from)-7} y={y(barre.fret)+2.5} width={(barre.to-barre.from)*SX+14} height={14} rx={7} fill={color} opacity="0.9"/>
+      )}
+
+      {frets.map((f, s) => {
+        if (f === null || f === 0) return null;
+        if (barre && f === barre.fret && s > barre.from && s < barre.to) return null;
+        const cy = y(f) + 9.5;
+        return (
+          <g key={"n"+s}>
+            <circle cx={x(s)} cy={cy} r={7} fill={color}/>
+            {fingers[s] > 0 && <text x={x(s)} y={cy+2.8} textAnchor="middle" fontSize="8" fontWeight="800" fill="white">{fingers[s]}</text>}
+          </g>
+        );
+      })}
+
+      {showNames && frets.map((f, s) => (
+        <text key={"nm"+s} x={x(s)} y={OY + SHOWN*SY + 10} textAnchor="middle" fontSize="7" fontWeight="700"
+              fill={f === null ? "#CBD5E1" : "#475569"}>
+          {f === null ? "–" : NOTES_EN[pc(tuning[s] + f)]}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function tabString(frets) {
+  return frets.map(f => (f === null ? "x" : f)).join(frets.some(f => f !== null && f > 9) ? "-" : "");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Dictionnaire des suites d'accords                                  */
+/* ------------------------------------------------------------------ */
+
+const MAJOR_SCALE   = [0,2,4,5,7,9,11];
+const NATURAL_MINOR = [0,2,3,5,7,8,10];
+
+// Chaque étape porte son propre chiffrage romain (rn) : ça permet d'écrire
+// correctement les accords empruntés (ex. le V majeur d'une cadence andalouse
+// en mineur), sans avoir à déduire la qualité d'une table générique.
+const ST = (d, triadQ, sevenQ, rn) => ({ d, triadQ, sevenQ, rn });
+
+const PROGRESSION_CATEGORIES = {
+  pop: { label:"Pop & Rock", color:"#4F8EF7", progressions:{
+    p145: { label:"Trois accords", mode:"major", description:"Le socle du rock, du blues et de la country", genres:"Rock, Blues, Country",
+      steps:[ ST(0,'maj','maj7','I'), ST(3,'maj','maj7','IV'), ST(4,'maj','dom7','V') ] },
+    p1564: { label:"Pop classique", mode:"major", description:"La progression la plus utilisée en pop depuis 60 ans", genres:"Pop",
+      steps:[ ST(0,'maj','maj7','I'), ST(4,'maj','dom7','V'), ST(5,'min','min7','vi'), ST(3,'maj','maj7','IV') ] },
+    p1645: { label:"Doo-wop", mode:"major", description:"Les ballades et slows des années 50", genres:"Doo-wop, Pop",
+      steps:[ ST(0,'maj','maj7','I'), ST(5,'min','min7','vi'), ST(3,'maj','maj7','IV'), ST(4,'maj','dom7','V') ] },
+    p6415: { label:"Départ mineur", mode:"major", description:"Les mêmes quatre accords, en commençant par vi", genres:"Pop, Rock",
+      steps:[ ST(5,'min','min7','vi'), ST(3,'maj','maj7','IV'), ST(0,'maj','maj7','I'), ST(4,'maj','dom7','V') ] },
+    p1462: { label:"Boucle indie", mode:"major", description:"Variante qui ne se résout jamais sur I", genres:"Indie, Pop",
+      steps:[ ST(0,'maj','maj7','I'), ST(3,'maj','maj7','IV'), ST(5,'min','min7','vi'), ST(1,'min','min7','ii') ] },
+  }},
+  jazz: { label:"Jazz", color:"#F59E0B", progressions:{
+    p251: { label:"Turnaround", mode:"major", description:"La cadence la plus jouée en jazz", genres:"Jazz",
+      steps:[ ST(1,'min','min7','ii'), ST(4,'maj','dom7','V'), ST(0,'maj','maj7','I') ] },
+    p2516: { label:"Boucle de 4 mesures", mode:"major", description:"Le turnaround qui revient sur lui-même", genres:"Jazz",
+      steps:[ ST(1,'min','min7','ii'), ST(4,'maj','dom7','V'), ST(0,'maj','maj7','I'), ST(5,'min','min7','vi') ] },
+    p1625: { label:"Rhythm changes", mode:"major", description:"La grille de « I Got Rhythm »", genres:"Jazz, Bebop",
+      steps:[ ST(0,'maj','maj7','I'), ST(5,'min','min7','vi'), ST(1,'min','min7','ii'), ST(4,'maj','dom7','V') ] },
+    p3625: { label:"Cycle des quintes", mode:"major", description:"Descente complète par quintes jusqu'à la tonique", genres:"Jazz",
+      steps:[ ST(2,'min','min7','iii'), ST(5,'min','min7','vi'), ST(1,'min','min7','ii'), ST(4,'maj','dom7','V'), ST(0,'maj','maj7','I') ] },
+  }},
+  blues: { label:"Blues", color:"#EF4444", progressions:{
+    p12bar: { label:"12 mesures", mode:"major", description:"La grille standard du blues, tout en dominantes", genres:"Blues",
+      steps:[0,0,0,0,3,3,0,0,4,3,0,4].map(d => ST(d,'dom7','dom7', d===0?'I7':d===3?'IV7':'V7')) },
+  }},
+  mineur: { label:"Mineur", color:"#7C3AED", progressions:{
+    p145m: { label:"Trois accords mineurs", mode:"minor", description:"Base mineure naturelle, sans tension", genres:"Rock, Folk",
+      steps:[ ST(0,'min','min7','i'), ST(3,'min','min7','iv'), ST(4,'min','min7','v') ] },
+    p1637: { label:"Rock alternatif", mode:"minor", description:"Boucle très employée depuis les années 90", genres:"Rock, Pop",
+      steps:[ ST(0,'min','min7','i'), ST(5,'maj','maj7','VI'), ST(2,'maj','maj7','III'), ST(6,'maj','dom7','VII') ] },
+    andalouse: { label:"Cadence andalouse", mode:"minor", description:"Descente chromatique omniprésente en flamenco", genres:"Flamenco, Rock",
+      steps:[ ST(0,'min','min7','i'), ST(6,'maj','maj7','VII'), ST(5,'maj','maj7','VI'), ST(4,'maj','dom7','V') ] },
+    p251m: { label:"Turnaround mineur", mode:"minor", description:"L'équivalent mineur du ii–V–I", genres:"Jazz mineur",
+      steps:[ ST(1,'dim','m7b5','ii°'), ST(4,'maj','dom7','V'), ST(0,'min','min7','i') ] },
+  }},
+};
+
+const ALL_PROGRESSIONS = Object.entries(PROGRESSION_CATEGORIES)
+  .reduce((a, [ck, c]) => ({ ...a, ...Object.fromEntries(Object.keys(c.progressions).map(pk => [pk, ck])) }), {});
+
+const romanOf   = p => p.steps.map(s => s.rn).join("–");
+const numericOf = p => p.steps.map(s => s.d + 1).join("-");
+
+const TEMPOS = [
+  { label:"Lent",   ms:950 },
+  { label:"Moyen",  ms:700 },
+  { label:"Rapide", ms:480 },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Interface                                                          */
+/* ------------------------------------------------------------------ */
+
+function NavPills({ current }) {
+  const pages = [
+    { key:"gammes",       href:"index.html",       label:"Gammes" },
+    { key:"accords",      href:"accords.html",     label:"Accords" },
+    { key:"progressions", href:"progressions.html", label:"Suites" },
+  ];
+  return (
+    <div style={{display:"flex",gap:5}}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px 9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
+function Section({ label, children }) {
+  return (
+    <div style={{marginBottom:18}}>
+      <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1.5,marginBottom:9}}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function Toggle({ on, onClick, label, color }) {
+  return (
+    <button onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,background:"transparent",border:"none",padding:0,cursor:"pointer"}}>
+      <div style={{width:30,height:18,borderRadius:9,background:on?color:"#E2E8F0",position:"relative",transition:"background .15s",flexShrink:0}}>
+        <div style={{position:"absolute",top:2,left:on?14:2,width:14,height:14,borderRadius:"50%",background:"white",boxShadow:"0 1px 3px rgba(0,0,0,.2)",transition:"left .15s"}}/>
+      </div>
+      <span style={{fontSize:10,fontWeight:600,color:on?"#0F172A":"#94A3B8"}}>{label}</span>
+    </button>
+  );
+}
+
+function ProgCard({ p, selected, accent, onClick }) {
+  return (
+    <button onClick={onClick} style={{background:selected?accent:"#F8FAFC",border:`2px solid ${selected?accent:"#E2E8F0"}`,borderRadius:12,padding:"9px 11px",cursor:"pointer",textAlign:"left",minWidth:140,flexShrink:0}}>
+      <div style={{fontSize:12,fontWeight:800,color:selected?"white":"#0F172A",marginBottom:1}}>{romanOf(p)}</div>
+      <div style={{fontSize:9,fontWeight:700,color:selected?"rgba(255,255,255,.75)":"#94A3B8",marginBottom:4,letterSpacing:.5}}>{numericOf(p)} · {p.label}</div>
+      <div style={{fontSize:9,color:selected?"rgba(255,255,255,.7)":"#94A3B8",marginBottom:4,lineHeight:1.4}}>{p.description}</div>
+      <div style={{fontSize:8,fontWeight:700,color:selected?"rgba(255,255,255,.55)":accent,textTransform:"uppercase",letterSpacing:.5}}>{p.genres}</div>
+    </button>
+  );
+}
+
+function ChordSlot({ step, chord, posIdx, onCycle, active, tuning }) {
+  const v = chord.voicings[posIdx] || chord.voicings[0];
+  const color = CHORD_TYPES[chord.qualityKey].color;
+  return (
+    <div style={{
+      background:"#F8FAFC", border:`2px solid ${active?color:"#E2E8F0"}`, borderRadius:14,
+      padding:"9px 9px 7px", width:118, flexShrink:0, transition:"border-color .15s",
+      boxShadow:active?`0 0 0 3px ${color}33`:"none",
+    }}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:2}}>
+        <div style={{fontSize:12,fontWeight:800,color:"#0F172A"}}>{step.rn}</div>
+        <div style={{fontSize:10,fontWeight:700,color}}>{chord.symbol}</div>
+      </div>
+      {v ? (
+        <React.Fragment>
+          <ChordDiagram {...v} tuning={tuning} color={color} showNames={false}/>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+            <div style={{fontSize:9,fontWeight:700,color:"#64748B",fontFamily:"ui-monospace, monospace",letterSpacing:.5}}>{tabString(v.frets)}</div>
+            {chord.voicings.length > 1 && (
+              <div style={{display:"flex",gap:2}}>
+                <button onClick={()=>onCycle(-1)} style={{border:"none",background:"#E2E8F0",color:"#475569",borderRadius:5,width:16,height:16,fontSize:9,cursor:"pointer",lineHeight:1}}>‹</button>
+                <button onClick={()=>onCycle(1)} style={{border:"none",background:"#E2E8F0",color:"#475569",borderRadius:5,width:16,height:16,fontSize:9,cursor:"pointer",lineHeight:1}}>›</button>
+              </div>
+            )}
+          </div>
+          {chord.voicings.length > 1 && (
+            <div style={{fontSize:7,color:"#CBD5E1",marginTop:2,textAlign:"right"}}>position {posIdx+1}/{chord.voicings.length}</div>
+          )}
+        </React.Fragment>
+      ) : (
+        <div style={{fontSize:9,color:"#B91C1C",padding:"10px 0",textAlign:"center"}}>aucune position</div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [key, setKey] = useState(0);
+  const [progKey, setProgKey] = useState("p251");
+  const [cat, setCat] = useState("jazz");
+  const [tuningKey, setTuningKey] = useState("standard");
+  const [seventh, setSeventh] = useState(true);
+  const [posIdx, setPosIdx] = useState({});
+  const [activeStep, setActiveStep] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [tempoIdx, setTempoIdx] = useState(1);
+  const [info, setInfo] = useState(false);
+
+  const tuning = TUNINGS[tuningKey];
+  const prog = PROGRESSION_CATEGORIES[cat].progressions[progKey];
+  const accent = PROGRESSION_CATEGORIES[cat].color;
+
+  // repart d'une position #1 propre à chaque changement de contexte
+  useEffect(() => { setPosIdx({}); setActiveStep(-1); }, [progKey, key, tuningKey, seventh]);
+
+  const chords = useMemo(() => {
+    const scale = prog.mode === "minor" ? NATURAL_MINOR : MAJOR_SCALE;
+    return prog.steps.map(s => {
+      const root = (key + scale[s.d]) % 12;
+      const qualityKey = seventh ? s.sevenQ : s.triadQ;
+      let voicings = generateVoicings(root, qualityKey, tuning.midi, { max:5 });
+      if (!voicings.length) voicings = generateVoicings(root, qualityKey, tuning.midi, { max:5, inversions:true });
+      return { root, qualityKey, symbol: NOTES_EN[root] + CHORD_TYPES[qualityKey].sym, voicings };
+    });
+  }, [key, progKey, tuningKey, seventh]);
+
+  function selectProg(catKey, pk) {
+    setCat(catKey);
+    setProgKey(pk);
+  }
+
+  function cycle(i, dir) {
+    const len = chords[i].voicings.length;
+    if (!len) return;
+    setPosIdx(p => ({ ...p, [i]: ((p[i] || 0) + dir + len) % len }));
+  }
+
+  function playSequence() {
+    if (isPlaying || !chords.length) return;
+    setIsPlaying(true);
+    const ms = TEMPOS[tempoIdx].ms;
+    chords.forEach((c, i) => {
+      const v = c.voicings[posIdx[i] || 0] || c.voicings[0];
+      setTimeout(() => {
+        if (v) strum(v.midis);
+        setActiveStep(i);
+      }, i * ms);
+    });
+    setTimeout(() => { setActiveStep(-1); setIsPlaying(false); }, chords.length * ms + 250);
+  }
+
+  return (
+    <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
+
+        <div style={{background:"#0F172A",paddingTop:"env(safe-area-inset-top, 0px)"}}>
+          {!IS_APP && (
+            <div style={{padding:"14px 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+              <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+            </div>
+          )}
+        </div>
+
+        <div style={{background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:9,color:"#93C5FD",letterSpacing:2,marginBottom:3,textTransform:"uppercase"}}>Suites d'accords</div>
+              <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>{romanOf(prog)}</h1>
+              <div style={{fontSize:11,color:"#93C5FD",marginTop:3,fontWeight:700,letterSpacing:.5}}>
+                {numericOf(prog)} en {NOTES[key]} · {tuning.label}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+              <NavPills current="progressions"/>
+              <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
+            </div>
+          </div>
+        </div>
+
+        {info && (
+          <div style={{background:"#EFF6FF",borderBottom:"1px solid #BFDBFE",padding:"11px 18px",fontSize:11,color:"#1E40AF",lineHeight:1.6}}>
+            <strong>{prog.label}</strong> — {prog.description}<br/>
+            <span style={{fontSize:10,color:"#3B82F6"}}>
+              Chaque accord affiche sa meilleure position ; utilise les flèches ‹ › sous une grille pour essayer une autre case du manche.
+              Le bouton ▶ joue la suite dans l'ordre, à la vitesse choisie.
+            </span>
+          </div>
+        )}
+
+        <div style={{flex:1,padding:"14px 14px calc(40px + env(safe-area-inset-bottom, 0px))"}}>
+
+          <Section label="Tonalité">
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {NOTES.map((n, i) => (
+                <button key={i} onClick={()=>setKey(i)} style={{width:36,height:36,borderRadius:9,border:`2px solid ${key===i?accent:"#E2E8F0"}`,background:key===i?accent:"#F8FAFC",color:key===i?"white":"#1E293B",fontSize:10,fontWeight:700,cursor:"pointer",flexShrink:0}}>{n}</button>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Suite d'accords">
+            <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:3,marginBottom:8}}>
+              {Object.entries(PROGRESSION_CATEGORIES).map(([k, c]) => (
+                <button key={k} onClick={()=>{ setCat(k); setProgKey(Object.keys(c.progressions)[0]); }} style={{padding:"5px 11px",borderRadius:20,border:"none",flexShrink:0,background:cat===k?"#0F172A":"#F1F5F9",color:cat===k?"white":"#64748B",fontSize:11,fontWeight:700,cursor:"pointer"}}>{c.label}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:4}}>
+              {Object.keys(PROGRESSION_CATEGORIES[cat].progressions).map(k => (
+                <ProgCard key={k} p={PROGRESSION_CATEGORIES[cat].progressions[k]} selected={progKey===k} accent={accent} onClick={()=>selectProg(cat,k)}/>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Accordage">
+            <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:3}}>
+              {Object.entries(TUNINGS).map(([k, t]) => (
+                <button key={k} onClick={()=>setTuningKey(k)} style={{padding:"6px 10px",borderRadius:10,border:`2px solid ${tuningKey===k?"#0F172A":"#E2E8F0"}`,background:tuningKey===k?"#0F172A":"#F8FAFC",flexShrink:0,cursor:"pointer",textAlign:"left"}}>
+                  <div style={{fontSize:10,fontWeight:800,color:tuningKey===k?"white":"#1E293B"}}>{t.label}</div>
+                  <div style={{fontSize:8,color:tuningKey===k?"rgba(255,255,255,.6)":"#94A3B8",letterSpacing:1,marginTop:1}}>{t.notes.join(" ")}</div>
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section label="Séquence">
+            <div style={{display:"flex",gap:16,marginBottom:10}}>
+              <Toggle on={seventh} onClick={()=>setSeventh(!seventh)} label="Avec 7es" color={accent}/>
+            </div>
+
+            <div style={{display:"flex",alignItems:"stretch",gap:0,overflowX:"auto",paddingBottom:6,marginBottom:10}}>
+              {chords.map((c, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && (
+                    <div style={{display:"flex",alignItems:"center",color:"#CBD5E1",fontSize:16,padding:"0 3px",flexShrink:0}}>→</div>
+                  )}
+                  <ChordSlot
+                    step={prog.steps[i]}
+                    chord={c}
+                    posIdx={posIdx[i] || 0}
+                    active={activeStep===i}
+                    onCycle={dir=>cycle(i, dir)}
+                    tuning={tuning.midi}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
+
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <button onClick={playSequence} disabled={isPlaying} style={{background:isPlaying?"#94A3B8":accent,border:"none",borderRadius:9,padding:"9px 16px",color:"white",fontSize:12,fontWeight:800,cursor:isPlaying?"default":"pointer",flexShrink:0}}>
+                {isPlaying ? "▶ En cours…" : "▶ Jouer la suite"}
+              </button>
+              <div style={{display:"flex",background:"#F1F5F9",borderRadius:9,padding:2,gap:2}}>
+                {TEMPOS.map((t, i) => (
+                  <button key={t.label} onClick={()=>setTempoIdx(i)} style={{padding:"6px 9px",borderRadius:7,border:"none",background:tempoIdx===i?"#0F172A":"transparent",color:tempoIdx===i?"white":"#94A3B8",fontSize:10,fontWeight:700,cursor:"pointer"}}>{t.label}</button>
+                ))}
+              </div>
+            </div>
+          </Section>
+
+          <div style={{background:"#0F172A",borderRadius:14,padding:"13px 15px"}}>
+            <div style={{fontSize:9,color:"#93C5FD",marginBottom:5,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>💡 Comment lire la séquence</div>
+            <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.65}}>
+              Les chiffres romains (I, ii, V…) indiquent la fonction de chaque accord dans la tonalité choisie ; les flèches montrent
+              l'ordre de jeu. « Avec 7es » bascule entre triades simples et accords de septième (utile pour les grilles jazz).
+              Chaque grille propose sa meilleure position, mais tu peux basculer sur une autre case du manche avec ‹ ›.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

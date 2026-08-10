@@ -1,7 +1,7 @@
 /* Service worker : rend les deux applications utilisables sans réseau.
    Stratégie « cache d'abord », avec rafraîchissement en arrière-plan. */
 
-const VERSION = "v1";
+const VERSION = "v2";
 const CACHE = `gammes-${VERSION}`;
 
 // Ressources du même domaine : indispensables, l'installation échoue si l'une manque.
@@ -9,14 +9,19 @@ const SHELL = [
   "./",
   "./index.html",
   "./accords.html",
+  "./progressions.html",
   "./gammes.webmanifest",
   "./accords.webmanifest",
+  "./progressions.webmanifest",
   "./icons/gammes-180.png",
   "./icons/gammes-192.png",
   "./icons/gammes-512.png",
   "./icons/accords-180.png",
   "./icons/accords-192.png",
   "./icons/accords-512.png",
+  "./icons/progressions-180.png",
+  "./icons/progressions-192.png",
+  "./icons/progressions-512.png",
 ];
 
 // Librairies servies par le CDN : mises en cache au mieux, une seule

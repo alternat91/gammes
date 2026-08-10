@@ -365,6 +365,22 @@ function ChordDiagram({ frets, fingers, barre, minFret, maxFret, tuning, color, 
   );
 }
 
+function NavPills({ current }) {
+  const pages = [
+    { key:"gammes",       href:"index.html",        label:"Gammes" },
+    { key:"accords",      href:"accords.html",      label:"Accords" },
+    { key:"progressions", href:"progressions.html", label:"Suites" },
+  ];
+  return (
+    <div style={{display:"flex",gap:5}}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px 9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
 function tabString(frets) {
   return frets.map(f => (f === null ? "x" : f)).join(frets.some(f => f !== null && f > 9) ? "-" : "");
 }
@@ -486,8 +502,8 @@ function App() {
               <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>{NOTES[root]} {chord.label}</h1>
               <div style={{fontSize:11,color:"#93C5FD",marginTop:3,fontWeight:700,letterSpacing:.5}}>{symbol} · {tuning.label}</div>
             </div>
-            <div style={{display:"flex",gap:6}}>
-              <a href="index.html" style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 10px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>Gammes</a>
+            <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+              <NavPills current="accords"/>
               <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
             </div>
           </div>

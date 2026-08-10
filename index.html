@@ -187,6 +187,22 @@ function NoteBtn({n,i,selected,onClick,color}){
   return <button onClick={onClick} style={{width:36,height:36,borderRadius:9,border:`2px solid ${selected?color:"#E2E8F0"}`,background:selected?color:"#F8FAFC",color:selected?"white":"#1E293B",fontSize:10,fontWeight:700,cursor:"pointer",flexShrink:0}}>{n}</button>;
 }
 
+function NavPills({current}){
+  const pages = [
+    { key:"gammes",       href:"index.html",        label:"Gammes" },
+    { key:"accords",      href:"accords.html",      label:"Accords" },
+    { key:"progressions", href:"progressions.html", label:"Suites" },
+  ];
+  return (
+    <div style={{display:"flex",gap:5}}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px 9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
 function Section({label,children}){
   return <div style={{marginBottom:18}}>
     <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1.5,marginBottom:9}}>{label}</div>
@@ -226,8 +242,8 @@ function App(){
               <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>{NOTES[root]} {scale.label}</h1>
               <div style={{fontSize:10,color:"#475569",marginTop:2}}>{scale.genres}</div>
             </div>
-            <div style={{display:"flex",gap:6}}>
-              <a href="accords.html" style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 10px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>Accords</a>
+            <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+              <NavPills current="gammes"/>
               <button onClick={()=>setInfo(!info)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:10,padding:"7px 9px",color:"white",fontSize:16,cursor:"pointer"}}>ℹ</button>
             </div>
           </div>
