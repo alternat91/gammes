@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="IFR" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Révision des calculs et formules IFR : fiches expliquées et entraînement au calcul mental." />
+  <link rel="manifest" href="ifr.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/ifr-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/ifr-192.png" />
+  <title>Révision IFR</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #E8EDF5; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; overscroll-behavior: none; }
+    ::-webkit-scrollbar { display: none; }
+    button { -webkit-appearance: none; font-family: inherit; }
+    input { font-family: inherit; -webkit-appearance: none; }
+  </style>
+  <script>
+    // Installe l'application pour qu'elle fonctionne sans réseau
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect, useRef } = React;
+
+// Lancée depuis l'écran d'accueil : iOS affiche déjà sa vraie barre d'état.
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
+
+/* ───────────────────────── Constantes et calculs ─────────────────────────
+   Toutes les valeurs affichées dans les fiches et toutes les réponses du quiz
+   sortent de ces fonctions : les exemples chiffrés ne peuvent pas diverger des
+   formules qu'ils illustrent. */
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const FT_NM = 6076.12;       // pieds dans un mille nautique
+const KT_MS = 0.514444;      // nœud en m/s
+const G     = 9.80665;
+const FT_M  = 0.3048;
+
+const round = (x, n = 0) => { const p = Math.pow(10, n); return Math.round(x * p) / p; };
+const fmt   = (x, n = 0) => round(x, n).toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const mod360 = a => ((a % 360) + 360) % 360;
+
+const CALC = {
+  // Descente et montée
+  pentePct:  deg => Math.tan(deg * D2R) * 100,
+  ftParNm:   deg => Math.tan(deg * D2R) * FT_NM,
+  vzPct:     (gs, pct) => gs * pct * FT_NM / 6000,          // ft/min pour un gradient en %
+  vzDeg:     (gs, deg) => gs * Math.tan(deg * D2R) * FT_NM / 60,
+  vzFtNm:    (gs, ftnm) => ftnm * gs / 60,
+  distDesc:  (dh, deg) => dh / (Math.tan(deg * D2R) * FT_NM), // NM pour perdre dh pieds
+  hauteurPlan: (nm, deg) => nm * Math.tan(deg * D2R) * FT_NM,
+
+  // Virages
+  inclinaisonTaux1: tas => Math.atan(3 * D2R * tas * KT_MS / G) * R2D,
+  tauxVirage: (tas, bank) => G * Math.tan(bank * D2R) / (tas * KT_MS) * R2D,  // °/s
+  rayon:      (gs, bank) => Math.pow(gs * KT_MS, 2) / (G * Math.tan(bank * D2R)) / 1852,
+  rayonTaux1: gs => gs * KT_MS / (3 * D2R) / 1852,
+  anticipation: (rayon, delta) => rayon * Math.tan(delta / 2 * D2R),
+
+  // Vent et navigation
+  composantes: (dirVent, forceVent, route) => {
+    const a = (dirVent - route) * D2R;
+    return { face: forceVent * Math.cos(a), travers: forceVent * Math.sin(a) };
+  },
+  derive:  (tas, travers) => Math.asin(Math.max(-1, Math.min(1, travers / tas))) * R2D,
+  unEn60:  (ecartNm, distNm) => 60 * ecartNm / distNm,
+  tempsMin: (nm, gs) => 60 * nm / gs,
+  pet:     (d, go, gh) => d * gh / (go + gh),
+  pnrTemps: (e, go, gh) => e * gh / (go + gh),
+
+  // Atmosphère et altimétrie
+  tempISA:  altFt => 15 - 1.98 * altFt / 1000,
+  altPress: (altFt, qnh) => altFt + (1013.25 - qnh) * 27,
+  altDens:  (paFt, oat) => paFt + 118.8 * (oat - (15 - 1.98 * paFt / 1000)),
+  pression: altFt => {                                      // Pa, atmosphère standard
+    const h = altFt * FT_M;
+    return h < 11000 ? 101325 * Math.pow(1 - 2.25577e-5 * h, 5.25588)
+                     : 22632.1 * Math.exp(-G * (h - 11000) / (287.053 * 216.65));
+  },
+  vitesseSon: tC => 20.0468 * Math.sqrt(tC + 273.15) / KT_MS, // kt
+  // Correction d'altitude par temps froid (PANS-OPS) : hauteur au-dessus de la
+  // source du calage, température de l'aérodrome, élévation de l'aérodrome.
+  correctionFroid: (hFt, t0, elevFt = 0) => {
+    const dISA = t0 - (15 - 1.98 * elevFt / 1000);
+    if (dISA >= 0) return 0;
+    const H = hFt * FT_M;
+    return (H * (-dISA) / (273 + t0 - 0.5 * 0.0065 * H)) / FT_M;
+  },
+  // CAS → TAS et Mach, formule compressible (exacte, pas la règle des 2 %/1000 ft)
+  casVersTas: (cas, paFt, oat) => {
+    const P0 = 101325, a0 = 340.294;
+    const P  = CALC.pression(paFt);
+    const v  = cas * KT_MS;
+    const qc = P0 * (Math.pow(1 + 0.2 * Math.pow(v / a0, 2), 3.5) - 1);
+    const M  = Math.sqrt(5 * (Math.pow(qc / P + 1, 2 / 7) - 1));
+    const a  = 20.0468 * Math.sqrt(oat + 273.15);
+    return { tas: M * a / KT_MS, mach: M };
+  },
+  // Secteur d'entrée en attente : cap d'arrivée / axe rapproché (OACI Doc 8168)
+  entreeAttente: (capArrivee, axeRapproche, droite = true) => {
+    const r = droite ? mod360(capArrivee - axeRapproche) : mod360(axeRapproche - capArrivee);
+    if (r >= 180 && r < 290) return "parallèle";
+    if (r >= 290) return "décalée";
+    return "directe";
+  },
+};
+
+/* ─────────────────────────────── Les fiches ─────────────────────────────── */
+
+const CATS = {
+  descente:   { label: "Descente",   court: "Desc.",  emoji: "🛬", color: "#4F8EF7" },
+  virages:    { label: "Virages",    court: "Virages", emoji: "↻",  color: "#8B5CF6" },
+  vent:       { label: "Vent & nav", court: "Vent",   emoji: "🌬", color: "#10B981" },
+  altimetrie: { label: "Altimétrie", court: "Altim.", emoji: "🌡", color: "#F59E0B" },
+  temps:      { label: "Temps & carburant", court: "Temps", emoji: "⏱", color: "#EC4899" },
+  procedures: { label: "Procédures", court: "Proc.",  emoji: "📋", color: "#06B6D4" },
+};
+
+const FICHES = [
+  // ── Descente ─────────────────────────────────────────────────────────────
+  { cat:"descente", titre:"Taux de descente sur un plan",
+    formule:"Vz (ft/min) = GS (kt) × pente (%) × 1,01",
+    regle:"Plan à 3° : Vz = GS × 5  (ou : la moitié de la GS, × 10)",
+    detail:"Un gradient en pourcentage est un rapport vertical/horizontal. En une minute l'avion parcourt GS/60 NM, soit GS × 101,3 ft ; multiplié par le gradient, cela donne la vitesse verticale. Le plan à 3° vaut 5,24 % : la règle « GS × 5 » sous-estime le taux d'environ 5 %, ce qui laisse l'avion très légèrement au-dessus du plan — l'erreur est du bon côté.",
+    exemple:() => ({ donnees:"GS 130 kt, plan à 3°",
+      etapes:["pente = tan 3° = " + fmt(CALC.pentePct(3),2) + " %",
+              "Vz = 130 × " + fmt(CALC.pentePct(3),2) + " × 1,01 = " + fmt(CALC.vzDeg(130,3)) + " ft/min",
+              "règle mentale : 130 × 5 = 650 ft/min"],
+      resultat: fmt(CALC.vzDeg(130,3)) + " ft/min" }) },
+
+  { cat:"descente", titre:"Angle, pourcentage et ft/NM",
+    formule:"pente (%) = tan(angle) × 100     ft/NM = tan(angle) × 6076",
+    regle:"1° ≈ 1,75 %  ·  3° = 5,2 % = 318 ft/NM ≈ 300 ft/NM",
+    detail:"Les cartes d'approche publient tantôt un angle (3,00°), tantôt un gradient (5,2 %), tantôt un ft/NM (318). Retenir l'équivalence du plan à 3° permet de passer de l'un à l'autre sans calcul : 300 ft/NM plus 6 % d'arrondi.",
+    exemple:() => ({ donnees:"Plan publié à 3,5°",
+      etapes:["pente = tan 3,5° × 100 = " + fmt(CALC.pentePct(3.5),2) + " %",
+              "ft/NM = tan 3,5° × 6076 = " + fmt(CALC.ftParNm(3.5)) + " ft/NM"],
+      resultat: fmt(CALC.pentePct(3.5),2) + " %  ·  " + fmt(CALC.ftParNm(3.5)) + " ft/NM" }) },
+
+  { cat:"descente", titre:"Distance de descente (top of descent)",
+    formule:"D (NM) = altitude à perdre (ft) / 1000 × 3",
+    regle:"3 NM par 1000 ft, plus 1 NM par tranche de 10 kt à perdre",
+    detail:"La règle des 3 correspond au plan à 3° (318 ft/NM ≈ 333 ft/NM). Elle ne comprend aucune marge de décélération : prévoir 1 NM supplémentaire par tranche de 10 kt à réduire, et le vent arrière allonge la distance dans le rapport GS/TAS.",
+    exemple:() => ({ donnees:"Du FL120 vers 3000 ft, plan 3°, réduction de 250 à 210 kt",
+      etapes:["altitude à perdre = 12000 − 3000 = 9000 ft",
+              "D = 9000 / 1000 × 3 = 27 NM",
+              "calcul exact = 9000 / 318 = " + fmt(CALC.distDesc(9000,3),1) + " NM",
+              "décélération de 40 kt : + 4 NM"],
+      resultat:"≈ 31 NM avant le point" }) },
+
+  { cat:"descente", titre:"Hauteur sur le plan à une distance donnée",
+    formule:"H (ft) = D (NM) × 318   (plan 3°)",
+    regle:"300 ft par NM, + 10 % — 10 NM → 3000 ft, 5 NM → 1500 ft",
+    detail:"C'est le contrôle permanent de l'approche non-précision : à chaque DME, comparer l'altitude affichée à celle du plan. Les cartes publient cette table ; savoir la reconstruire permet de vérifier qu'on n'est ni haut ni bas entre deux repères.",
+    exemple:() => ({ donnees:"6 NM du seuil, plan 3°, seuil à 400 ft",
+      etapes:["hauteur sur le plan = 6 × 318 = " + fmt(CALC.hauteurPlan(6,3)) + " ft",
+              "altitude = " + fmt(CALC.hauteurPlan(6,3)) + " + 400 = " + fmt(CALC.hauteurPlan(6,3) + 400) + " ft"],
+      resultat: fmt(CALC.hauteurPlan(6,3) + 400) + " ft QNH" }) },
+
+  { cat:"descente", titre:"VDP — point de descente visuelle",
+    formule:"D (NM) = HAT (ft) / 300",
+    regle:"En temps : t (s) = HAT / Vz × 60, retranché du temps au MAP",
+    detail:"Sur une approche classique sans plan calculé, le VDP est le dernier point d'où une descente normale à 3° mène au toucher. Passé ce point sans visuel, la remise de gaz est acquise : poursuivre à l'altitude de MDA jusqu'au MAP ne sert qu'à voir la piste, plus à s'y poser.",
+    exemple:() => ({ donnees:"MDA 800 ft, altitude du terrain 200 ft, Vz 700 ft/min",
+      etapes:["HAT = 800 − 200 = 600 ft",
+              "D = 600 / 300 = 2,0 NM avant le seuil",
+              "t = 600 / 700 × 60 = " + fmt(600/700*60) + " s avant le MAP"],
+      resultat:"2,0 NM  ·  " + fmt(600/700*60) + " s" }) },
+
+  { cat:"descente", titre:"Gradient de montée requis",
+    formule:"Vz (ft/min) = gradient (ft/NM) × GS / 60",
+    regle:"Gradient de remise de gaz standard : 2,5 % = 152 ft/NM · décollage : 3,3 % = 200 ft/NM",
+    detail:"Un gradient publié est une pente sol : le taux de montée nécessaire dépend donc de la vitesse sol, pas de la vitesse propre. Vent de face favorable, vent arrière pénalisant. Une procédure exigeant un gradient supérieur au minimum l'indique explicitement, souvent jusqu'à une altitude donnée.",
+    exemple:() => ({ donnees:"Remise de gaz à 4 % exigée, GS 140 kt",
+      etapes:["ft/NM = 4 % × 6076 / 100 = " + fmt(4*FT_NM/100) + " ft/NM",
+              "Vz = " + fmt(4*FT_NM/100) + " × 140 / 60 = " + fmt(CALC.vzPct(140,4)) + " ft/min"],
+      resultat: fmt(CALC.vzPct(140,4)) + " ft/min minimum" }) },
+
+  { cat:"descente", titre:"Rattrapage de plan",
+    formule:"Vz requis = écart d'altitude restant / temps restant",
+    regle:"Haut de 300 ft à 3 NM d'un repère à 130 kt : + 200 ft/min pendant 1,4 min",
+    detail:"Plutôt que de plonger, calculer le taux qui remet sur le plan au repère suivant : temps restant = 60 × D / GS, puis Vz = altitude à perdre / temps. Si le taux obtenu dépasse 1000 ft/min sous 1000 ft de hauteur, l'approche est instable — remise de gaz.",
+    exemple:() => ({ donnees:"1800 ft à perdre en 5 NM, GS 120 kt",
+      etapes:["temps = 60 × 5 / 120 = " + fmt(CALC.tempsMin(5,120),1) + " min",
+              "Vz = 1800 / " + fmt(CALC.tempsMin(5,120),1) + " = " + fmt(1800/CALC.tempsMin(5,120)) + " ft/min"],
+      resultat: fmt(1800/CALC.tempsMin(5,120)) + " ft/min" }) },
+
+  // ── Virages ──────────────────────────────────────────────────────────────
+  { cat:"virages", titre:"Taux de virage standard",
+    formule:"Taux 1 = 3°/s = 180°/min = un demi-tour en 1 min",
+    regle:"Taux ½ (1,5°/s) au-dessus de 250 kt et en général sur avion de transport",
+    detail:"Toutes les procédures publiées (attentes, inversions, remises de gaz) sont construites sur le taux 1, plafonné à 25° d'inclinaison. Au-delà de la vitesse où 25° ne suffisent plus (environ 170 kt), le virage se fait à 25° et prend plus d'une minute.",
+    exemple:() => ({ donnees:"Virage de 210° au taux 1",
+      etapes:["t = 210 / 3 = " + fmt(210/3) + " s"],
+      resultat: fmt(210/3) + " s, soit 1 min 10" }) },
+
+  { cat:"virages", titre:"Inclinaison pour un taux 1",
+    formule:"φ ≈ TAS / 10 + 7        (exact : tan φ = ω·V / g)",
+    regle:"100 kt → 17° · 150 kt → 22° · 200 kt → 27°, plafonné à 25°",
+    detail:"La règle du dixième plus sept surestime de 1 à 2° l'inclinaison réelle, ce qui est sans conséquence : le pilote affine ensuite au coordonnateur de virage. Retenir surtout que l'inclinaison croît avec la vitesse, alors que le taux, lui, est imposé.",
+    exemple:() => ({ donnees:"TAS 150 kt",
+      etapes:["règle : 150 / 10 + 7 = 22°",
+              "exact : tan φ = 0,0524 × 150 × 0,514 / 9,81 → φ = " + fmt(CALC.inclinaisonTaux1(150),1) + "°"],
+      resultat:"≈ 22° (exact " + fmt(CALC.inclinaisonTaux1(150),1) + "°)" }) },
+
+  { cat:"virages", titre:"Rayon de virage",
+    formule:"R (NM) ≈ GS / 188   au taux 1        R = V² / (g · tan φ)",
+    regle:"Environ 1 % de la GS, divisé par 2 : 150 kt → 0,8 NM",
+    detail:"Le rayon détermine l'anticipation de tous les virages : interception d'un axe, sortie d'attente, arc DME. Il croît comme le carré de la vitesse à inclinaison constante, mais seulement linéairement au taux 1 puisque l'inclinaison augmente avec la vitesse.",
+    exemple:() => ({ donnees:"GS 160 kt, taux 1",
+      etapes:["R = 160 / 188 = " + fmt(CALC.rayonTaux1(160),2) + " NM",
+              "diamètre (largeur de l'hippodrome) = " + fmt(2*CALC.rayonTaux1(160),2) + " NM"],
+      resultat: fmt(CALC.rayonTaux1(160),2) + " NM" }) },
+
+  { cat:"virages", titre:"Anticipation d'un virage",
+    formule:"Avance (NM) = R × tan(Δcap / 2)",
+    regle:"Virage de 90° : anticiper d'un rayon · virage de 30° : d'un quart de rayon",
+    detail:"Le point où amorcer le virage se trouve en amont de l'intersection des deux routes. En interception d'un axe ILS à 30°, l'anticipation est faible ; en virage de base à 90°, elle vaut un rayon complet, soit près d'un mille à vitesse d'approche.",
+    exemple:() => ({ donnees:"GS 140 kt, changement de cap de 80°",
+      etapes:["R = 140 / 188 = " + fmt(CALC.rayonTaux1(140),2) + " NM",
+              "avance = " + fmt(CALC.rayonTaux1(140),2) + " × tan 40° = " + fmt(CALC.anticipation(CALC.rayonTaux1(140),80),2) + " NM"],
+      resultat: fmt(CALC.anticipation(CALC.rayonTaux1(140),80),2) + " NM avant le point" }) },
+
+  { cat:"virages", titre:"Taux de virage à inclinaison donnée",
+    formule:"taux (°/s) = g · tan φ / V",
+    regle:"À 25° d'inclinaison, le taux tombe sous 3°/s dès que la TAS dépasse ≈ 170 kt",
+    detail:"Utile pour vérifier qu'une procédure reste tenable : si le taux obtenu à 25° est inférieur au taux 1, le virage sortira de l'aire protégée si l'on suit un chronométrage prévu pour le taux 1. C'est la raison des vitesses maximales publiées en attente et en inversion.",
+    exemple:() => ({ donnees:"TAS 200 kt, inclinaison 25°",
+      etapes:["taux = 9,81 × tan 25° / (200 × 0,514) = " + fmt(CALC.tauxVirage(200,25),2) + " °/s",
+              "un demi-tour prend 180 / " + fmt(CALC.tauxVirage(200,25),2) + " = " + fmt(180/CALC.tauxVirage(200,25)) + " s"],
+      resultat: fmt(CALC.tauxVirage(200,25),2) + " °/s, inférieur au taux 1" }) },
+
+  // ── Vent et navigation ───────────────────────────────────────────────────
+  { cat:"vent", titre:"Règle du 1 en 60",
+    formule:"écart (°) = 60 × écart latéral (NM) / distance parcourue (NM)",
+    regle:"1 NM d'écart après 60 NM = 1° d'erreur",
+    detail:"La brique de base de toute la navigation à l'estime : elle sert à mesurer une erreur de cap, à calculer une dérive, à estimer un angle de fermeture. Pour rejoindre l'axe au point voulu, additionner l'angle d'erreur (ce qui a été perdu) et l'angle de fermeture (ce qu'il faut regagner).",
+    exemple:() => ({ donnees:"2,5 NM à droite de l'axe après 30 NM, 30 NM restants",
+      etapes:["erreur = 60 × 2,5 / 30 = " + fmt(CALC.unEn60(2.5,30),1) + "°",
+              "fermeture = 60 × 2,5 / 30 = " + fmt(CALC.unEn60(2.5,30),1) + "°",
+              "correction totale = " + fmt(2*CALC.unEn60(2.5,30),1) + "° à gauche"],
+      resultat:"corriger de " + fmt(2*CALC.unEn60(2.5,30),1) + "° à gauche" }) },
+
+  { cat:"vent", titre:"Composantes du vent",
+    formule:"face = V × cos θ        travers = V × sin θ",
+    regle:"Méthode de l'horloge : 15° → 1/4 · 30° → 1/2 · 45° → 0,7 · 60° → 0,9 · 90° → tout",
+    detail:"θ est l'angle entre la direction d'où vient le vent et la route (ou l'axe de piste). La méthode de l'horloge traite l'angle comme des minutes : 30 minutes = la moitié du cadran, donc la moitié du vent en travers. Elle est juste à 3 % près, ce qui suffit largement pour comparer à une limite de démonstration.",
+    exemple:() => ({ donnees:"Piste 27, vent 240° / 20 kt",
+      etapes:["θ = 270 − 240 = 30° par la gauche",
+              "travers = 20 × sin 30° = " + fmt(Math.abs(CALC.composantes(240,20,270).travers),1) + " kt",
+              "face = 20 × cos 30° = " + fmt(CALC.composantes(240,20,270).face,1) + " kt"],
+      resultat: fmt(Math.abs(CALC.composantes(240,20,270).travers),1) + " kt de travers, " + fmt(CALC.composantes(240,20,270).face,1) + " kt de face" }) },
+
+  { cat:"vent", titre:"Dérive et cap à tenir",
+    formule:"dérive (°) = 60 × travers / TAS        (exact : sin d = travers / TAS)",
+    regle:"Cap = route + dérive, en corrigeant du côté d'où vient le vent",
+    detail:"La règle du 1 en 60 appliquée au triangle des vitesses. Elle reste juste tant que la dérive ne dépasse pas une vingtaine de degrés. Attention au signe : avec un vent de gauche, le cap est plus petit que la route.",
+    exemple:() => ({ donnees:"Route 090°, TAS 120 kt, vent 030° / 25 kt",
+      etapes:["travers = 25 × sin(30 − 90) = " + fmt(Math.abs(CALC.composantes(30,25,90).travers),1) + " kt par la gauche",
+              "dérive = 60 × " + fmt(Math.abs(CALC.composantes(30,25,90).travers),1) + " / 120 = " + fmt(Math.abs(CALC.derive(120,CALC.composantes(30,25,90).travers)),1) + "°",
+              "cap = 090 − " + fmt(Math.abs(CALC.derive(120,CALC.composantes(30,25,90).travers)),0) + " = " + fmt(90 - Math.abs(CALC.derive(120,CALC.composantes(30,25,90).travers)),0) + "°"],
+      resultat:"cap " + fmt(90 - Math.abs(CALC.derive(120,CALC.composantes(30,25,90).travers)),0) + "°" }) },
+
+  { cat:"vent", titre:"Triple dérive en attente",
+    formule:"cap en éloignement = cap rapproché opposé ± 3 × dérive",
+    regle:"Le triple corrige l'éloignement, le virage et la reprise de l'axe",
+    detail:"En éloignement, la correction est appliquée du côté opposé à celle du rapprochement, et triplée : elle doit compenser la dérive subie pendant la branche mais aussi pendant les deux virages. Le chronométrage de l'éloignement, lui, s'ajuste pour obtenir une branche rapprochée d'une minute.",
+    exemple:() => ({ donnees:"Axe rapproché 270°, dérive 6° à droite en rapprochement",
+      etapes:["cap rapproché = 270 + 6 = 276°",
+              "cap éloignement = 090 − 18 = 072°"],
+      resultat:"cap 072° en éloignement" }) },
+
+  { cat:"vent", titre:"Vitesse sol",
+    formule:"GS = TAS × cos(dérive) − composante de face",
+    regle:"Approximation courante : GS ≈ TAS − face",
+    detail:"Le terme en cosinus est négligeable tant que la dérive reste faible : à 10° de dérive, il coûte 1,5 % de la TAS. Sur une longue branche par vent fort de travers, l'erreur devient toutefois significative sur l'heure estimée.",
+    exemple:() => ({ donnees:"TAS 140 kt, dérive 8°, 15 kt de face",
+      etapes:["GS = 140 × cos 8° − 15 = " + fmt(140*Math.cos(8*D2R) - 15,1) + " kt",
+              "approximation : 140 − 15 = 125 kt"],
+      resultat: fmt(140*Math.cos(8*D2R) - 15,1) + " kt" }) },
+
+  { cat:"vent", titre:"Point d'égal temps (PET)",
+    formule:"D_PET = D × GS_retour / (GS_aller + GS_retour)",
+    regle:"Sans vent, le PET est à mi-parcours ; il se décale contre le vent",
+    detail:"Le point d'où il faut autant de temps pour continuer que pour revenir. Il dépend uniquement des deux vitesses sol, pas de l'autonomie. Avec du vent de face à l'aller, le PET recule vers le départ : le retour serait rapide.",
+    exemple:() => ({ donnees:"420 NM, 150 kt à l'aller, 190 kt au retour",
+      etapes:["D = 420 × 190 / (150 + 190) = " + fmt(CALC.pet(420,150,190),1) + " NM",
+              "temps depuis le départ = 60 × " + fmt(CALC.pet(420,150,190),1) + " / 150 = " + fmt(CALC.tempsMin(CALC.pet(420,150,190),150)) + " min"],
+      resultat: fmt(CALC.pet(420,150,190),1) + " NM du départ" }) },
+
+  { cat:"vent", titre:"Point de non-retour (PNR)",
+    formule:"t_PNR = E × GS_retour / (GS_aller + GS_retour)",
+    regle:"E est l'autonomie utilisable, réserves déduites",
+    detail:"Le dernier instant où l'on peut faire demi-tour et rentrer avec le carburant restant. Contrairement au PET, il dépend de l'autonomie. Distance associée : D = t × GS_aller.",
+    exemple:() => ({ donnees:"Autonomie utilisable 4 h, 150 kt aller, 190 kt retour",
+      etapes:["t = 4 × 190 / (150 + 190) = " + fmt(CALC.pnrTemps(4,150,190),2) + " h",
+              "D = " + fmt(CALC.pnrTemps(4,150,190),2) + " × 150 = " + fmt(CALC.pnrTemps(4,150,190)*150) + " NM"],
+      resultat: fmt(CALC.pnrTemps(4,150,190)*60) + " min, soit " + fmt(CALC.pnrTemps(4,150,190)*150) + " NM" }) },
+
+  { cat:"vent", titre:"Sensibilité des axes VOR et ILS",
+    formule:"VOR : pleine échelle ±10°   ·   LOC : ±2,5°   ·   glide : ±0,7°",
+    regle:"1° d'écart = 1 NM à 60 NM ; un point de CDI VOR = 2°",
+    detail:"L'aiguille du VOR est angulaire : à 60 NM, la pleine échelle représente 10 NM ; à 5 NM, moins d'un mille. Le localizer est quatre fois plus fin, et le glide encore quatre fois plus : d'où la correction beaucoup plus douce à appliquer près du seuil.",
+    exemple:() => ({ donnees:"Deux points de déviation VOR à 24 NM de la balise",
+      etapes:["2 points = 4°",
+              "écart = 4 × 24 / 60 = " + fmt(4*24/60,1) + " NM"],
+      resultat: fmt(4*24/60,1) + " NM hors axe" }) },
+
+  { cat:"vent", titre:"Distance à la balise par relèvements",
+    formule:"temps station (min) = 60 × temps écoulé (min) / Δ relèvement (°)",
+    regle:"Faire varier le relèvement de 10° et chronométrer",
+    detail:"Méthode du double relèvement : en volant perpendiculairement à la balise, le temps pour l'atteindre est proportionnel au temps mis à balayer un certain nombre de degrés. Distance = TAS × temps station / 60.",
+    exemple:() => ({ donnees:"10° balayés en 2 min 30, TAS 130 kt",
+      etapes:["temps station = 60 × 2,5 / 10 = 15 min",
+              "distance = 130 × 15 / 60 = " + fmt(130*15/60) + " NM"],
+      resultat:"15 min, soit " + fmt(130*15/60) + " NM" }) },
+
+  // ── Altimétrie ───────────────────────────────────────────────────────────
+  { cat:"altimetrie", titre:"Loi barométrique",
+    formule:"1 hPa ≈ 27 ft au niveau de la mer",
+    regle:"27 ft au sol · 50 ft vers le FL180 · 70 ft vers le FL300",
+    detail:"L'écart de pression correspond à une tranche d'air d'autant plus épaisse que l'air est peu dense. La valeur de 27 ft (souvent arrondie à 28) ne vaut donc qu'en basse couche : c'est celle à utiliser pour les calages, jamais en altitude.",
+    exemple:() => ({ donnees:"Calage 1003 au lieu de 1013",
+      etapes:["écart = 10 hPa",
+              "erreur = 10 × 27 = 270 ft — l'altimètre indique 270 ft de trop"],
+      resultat:"270 ft d'erreur" }) },
+
+  { cat:"altimetrie", titre:"Altitude pression",
+    formule:"Zp = altitude indiquée + (1013,25 − QNH) × 27",
+    regle:"QNH bas → altitude pression plus haute (donc performances dégradées)",
+    detail:"L'altitude pression est l'entrée de tous les abaques de performances. Elle se lit directement en affichant 1013 à l'altimètre, ou se calcule depuis le QNH. À ne pas confondre avec le niveau de vol, qui en est l'expression en centaines de pieds.",
+    exemple:() => ({ donnees:"Terrain à 1200 ft, QNH 998",
+      etapes:["Zp = 1200 + (1013 − 998) × 27 = " + fmt(CALC.altPress(1200,998)) + " ft"],
+      resultat: fmt(CALC.altPress(1200,998)) + " ft" }) },
+
+  { cat:"altimetrie", titre:"Température standard et déviation ISA",
+    formule:"T_ISA = 15 − 2 × (altitude / 1000)      ΔISA = OAT − T_ISA",
+    regle:"−2 °C par 1000 ft jusqu'à la tropopause (36 090 ft, −56,5 °C)",
+    detail:"Le gradient réel est de 1,98 °C/1000 ft, arrondi à 2. La déviation ISA conditionne l'altitude densité, la TAS, les performances et la correction d'altitude par temps froid : c'est la donnée à calculer en premier.",
+    exemple:() => ({ donnees:"FL100, OAT −15 °C",
+      etapes:["T_ISA = 15 − 20 = −5 °C",
+              "ΔISA = −15 − (−5) = −10 °C"],
+      resultat:"ISA − 10" }) },
+
+  { cat:"altimetrie", titre:"Altitude densité",
+    formule:"Zd = Zp + 120 × ΔISA",
+    regle:"+ 120 ft par degré au-dessus de la standard",
+    detail:"C'est l'altitude à laquelle l'avion croit voler du point de vue des performances. Par forte chaleur en terrain élevé, elle peut dépasser de plusieurs milliers de pieds l'altitude réelle : distance de décollage allongée, taux de montée effondré.",
+    exemple:() => ({ donnees:"Zp 3000 ft, OAT +30 °C",
+      etapes:["T_ISA = 15 − 6 = 9 °C",
+              "ΔISA = 30 − 9 = +21 °C",
+              "Zd = 3000 + 120 × 21 = " + fmt(CALC.altDens(3000,30)) + " ft"],
+      resultat: fmt(CALC.altDens(3000,30)) + " ft" }) },
+
+  { cat:"altimetrie", titre:"Correction d'altitude par temps froid",
+    formule:"ΔH = H × (15 − t₀) / (273 + t₀ − 0,0033 × H)   [H en mètres]",
+    regle:"≈ 4 % de la hauteur par 10 °C sous la standard",
+    detail:"Par température très basse, l'altimètre surestime l'altitude vraie : l'avion est plus bas qu'indiqué. La correction s'ajoute aux altitudes minimales publiées (segments d'approche, MSA, altitudes de palier), jamais au calage. Elle est calculée sur la hauteur au-dessus de la source du calage, en pratique l'aérodrome.",
+    exemple:() => ({ donnees:"Palier à 2000 ft au-dessus d'un terrain à −20 °C",
+      etapes:["ΔISA ≈ −35 °C",
+              "règle : 2000 × 4 % × 3,5 = 280 ft",
+              "formule OACI : " + fmt(CALC.correctionFroid(2000,-20)) + " ft"],
+      resultat:"ajouter " + fmt(CALC.correctionFroid(2000,-20)) + " ft" }) },
+
+  { cat:"altimetrie", titre:"Du chaud vers le froid",
+    formule:"Altitude vraie < altitude indiquée quand la masse d'air est froide",
+    regle:"« Du chaud vers le froid, ou du haut vers le bas : attention danger »",
+    detail:"Même chose pour la pression : voler vers une zone de QNH plus bas sans recaler place l'avion sous l'altitude affichée. Les deux effets, température et pression, s'ajoutent en hiver dans une dépression froide.",
+    exemple:() => ({ donnees:"Croisière FL070, QNH passant de 1020 à 1000",
+      etapes:["écart de 20 hPa non recalé",
+              "l'avion descend de 20 × 27 = 540 ft sans que l'altimètre bouge"],
+      resultat:"540 ft de moins qu'affiché" }) },
+
+  { cat:"altimetrie", titre:"TAS et nombre de Mach",
+    formule:"a (kt) = 39 × √(T en K)        M = TAS / a",
+    regle:"TAS ≈ CAS × (1 + 2 % par 1000 ft) jusqu'au FL200",
+    detail:"La vitesse du son ne dépend que de la température. La règle des 2 % est une approximation incompressible : au-delà du FL200 et de 250 kt, l'écart avec le calcul exact dépasse plusieurs nœuds, d'où le calculateur de la boîte à outils.",
+    exemple:() => ({ donnees:"FL200, OAT −25 °C, CAS 250 kt",
+      etapes:["a = 39 × √248 = " + fmt(CALC.vitesseSon(-25)) + " kt",
+              "règle des 2 % : 250 × 1,40 = 350 kt",
+              "calcul exact : TAS = " + fmt(CALC.casVersTas(250,20000,-25).tas) + " kt, M = " + fmt(CALC.casVersTas(250,20000,-25).mach,3)],
+      resultat:"TAS " + fmt(CALC.casVersTas(250,20000,-25).tas) + " kt · M " + fmt(CALC.casVersTas(250,20000,-25).mach,2) }) },
+
+  { cat:"altimetrie", titre:"Conversions utiles",
+    formule:"1 NM = 1852 m = 6076 ft   ·   1 ft = 0,3048 m   ·   1 in.Hg = 33,86 hPa",
+    regle:"1 US gal = 3,785 L · 1 lb = 0,454 kg · °F = °C × 1,8 + 32",
+    detail:"Le facteur 6076 ft/NM est celui qui revient dans tous les calculs de pente. Pour l'essence AVGAS, compter 0,72 kg par litre ; pour le Jet A-1, 0,80 kg par litre — les masses des devis de masse et centrage en dépendent.",
+    exemple:() => ({ donnees:"30 US gal d'AVGAS",
+      etapes:["volume = 30 × 3,785 = " + fmt(30*3.785,1) + " L",
+              "masse = " + fmt(30*3.785,1) + " × 0,72 = " + fmt(30*3.785*0.72) + " kg"],
+      resultat: fmt(30*3.785,1) + " L, soit " + fmt(30*3.785*0.72) + " kg" }) },
+
+  // ── Temps et carburant ───────────────────────────────────────────────────
+  { cat:"temps", titre:"Temps de vol",
+    formule:"t (min) = 60 × D (NM) / GS (kt)",
+    regle:"GS / 60 = milles par minute — 120 kt = 2 NM/min",
+    detail:"Convertir la vitesse sol en milles par minute est la manière la plus rapide de tenir une estimée en vol : à 150 kt, 2,5 NM par minute, donc 25 NM en 10 minutes. C'est aussi la base du chronométrage des approches classiques.",
+    exemple:() => ({ donnees:"38 NM à 135 kt",
+      etapes:["135 / 60 = 2,25 NM/min",
+              "t = 38 / 2,25 = " + fmt(CALC.tempsMin(38,135),1) + " min"],
+      resultat: fmt(CALC.tempsMin(38,135),1) + " min" }) },
+
+  { cat:"temps", titre:"Carburant nécessaire",
+    formule:"Q = consommation horaire × temps de vol",
+    regle:"Réserve finale IFR : 45 min (hélice) ou 30 min (turbine)",
+    detail:"Le bilan IFR complet : roulage + trajet + imprévus (5 % du trajet ou 5 min) + déroutement + réserve finale + supplément éventuel. La réserve finale se calcule à la vitesse d'attente, 1500 ft au-dessus du terrain de dégagement.",
+    exemple:() => ({ donnees:"1 h 20 de trajet, 38 L/h, dégagement 25 min, réserve 45 min",
+      etapes:["trajet = 38 × 1,333 = " + fmt(38*4/3,1) + " L",
+              "imprévus 5 % = " + fmt(38*4/3*0.05,1) + " L",
+              "dégagement = 38 × 25/60 = " + fmt(38*25/60,1) + " L",
+              "réserve = 38 × 0,75 = " + fmt(38*0.75,1) + " L"],
+      resultat:"≈ " + fmt(38*4/3 + 38*4/3*0.05 + 38*25/60 + 38*0.75) + " L" }) },
+
+  { cat:"temps", titre:"Autonomie",
+    formule:"E (h) = carburant utilisable / consommation horaire",
+    regle:"Retrancher toujours le carburant inutilisable et la réserve finale",
+    detail:"L'autonomie qui entre dans le calcul du PNR est l'autonomie utilisable : celle qui reste une fois la réserve finale mise de côté. C'est une erreur classique d'y faire entrer la totalité des réservoirs.",
+    exemple:() => ({ donnees:"120 L à bord, 38 L/h, réserve finale 45 min",
+      etapes:["réserve = " + fmt(38*0.75,1) + " L",
+              "utilisable = 120 − " + fmt(38*0.75,1) + " = " + fmt(120 - 38*0.75,1) + " L",
+              "E = " + fmt(120 - 38*0.75,1) + " / 38 = " + fmt((120 - 38*0.75)/38,2) + " h"],
+      resultat: fmt((120 - 38*0.75)*60/38) + " min utilisables" }) },
+
+  { cat:"temps", titre:"Chronométrage d'une approche classique",
+    formule:"t (s) = 3600 × D (NM) / GS (kt)",
+    regle:"À 90 kt, 1 NM = 40 s ; à 120 kt, 30 s ; à 150 kt, 24 s",
+    detail:"Les cartes publient le temps entre le repère final et le point d'approche interrompue pour plusieurs vitesses sol. Le calculer soi-même sert quand la GS réelle diffère de la table, notamment par vent fort.",
+    exemple:() => ({ donnees:"4,2 NM du FAF au MAPt, GS 105 kt",
+      etapes:["t = 3600 × 4,2 / 105 = " + fmt(3600*4.2/105) + " s"],
+      resultat: fmt(3600*4.2/105) + " s, soit 2 min 24" }) },
+
+  // ── Procédures ───────────────────────────────────────────────────────────
+  { cat:"procedures", titre:"Vitesses maximales en attente (Doc 8168)",
+    formule:"≤ FL140 : 230 kt (170 kt cat. A/B)  ·  FL140–200 : 240 kt  ·  FL200–340 : 265 kt  ·  > FL340 : M 0,83",
+    regle:"En turbulence : 280 kt ou M 0,8, et M 0,83 au-dessus du FL340",
+    detail:"Ces vitesses indiquées garantissent que le virage au taux 1, plafonné à 25° d'inclinaison, reste dans l'aire protégée. Les dépasser, c'est sortir de l'aire — sauf autorisation explicite du contrôle après information.",
+    exemple:() => ({ donnees:"Attente au FL160, avion de catégorie C",
+      etapes:["tranche FL140 à FL200"],
+      resultat:"240 kt maximum" }) },
+
+  { cat:"procedures", titre:"Chronométrage de l'attente",
+    formule:"Branche rapprochée : 1 min jusqu'au FL140, 1 min 30 au-dessus",
+    regle:"Le chrono d'éloignement démarre au travers de la balise, ou à la fin du virage",
+    detail:"Le temps s'applique à la branche rapprochée : c'est l'éloignement qu'on ajuste. Vent de face en rapprochement, on raccourcit l'éloignement ; vent arrière, on l'allonge. Sur DME, le temps est remplacé par une distance publiée.",
+    exemple:() => ({ donnees:"Rapprochement chronométré à 1 min 20 avec vent arrière en éloignement",
+      etapes:["excédent de 20 s en rapprochement",
+              "réduire l'éloignement d'environ 20 s, soit 40 s"],
+      resultat:"éloignement ≈ 40 s au tour suivant" }) },
+
+  { cat:"procedures", titre:"Secteurs d'entrée en attente",
+    formule:"Directe 180°  ·  parallèle 110°  ·  décalée 70°   (± 5° de tolérance)",
+    regle:"Cap moins axe rapproché, dans le sens des virages : 0–180 directe, 180–290 parallèle, 290–360 décalée",
+    detail:"Les secteurs se mesurent par rapport à l'axe rapproché, du côté des virages. En entrée décalée, on prend un cap à 30° de l'axe d'éloignement pendant une minute avant de virer vers la balise ; en parallèle, on suit l'axe en éloignement pendant une minute, on vire du côté non protégé puis on rejoint la balise.",
+    exemple:() => ({ donnees:"Attente à droite, axe rapproché 090°, arrivée au cap 340°",
+      etapes:["écart = 340 − 090 = 250°",
+              "250 tombe entre 180 et 290"],
+      resultat:"entrée " + CALC.entreeAttente(340,90,true) }) },
+
+  { cat:"procedures", titre:"Catégories d'approche (Vat)",
+    formule:"A < 91 kt  ·  B 91–120  ·  C 121–140  ·  D 141–165  ·  E 166–210",
+    regle:"Vat = 1,3 × Vso à la masse maximale à l'atterrissage",
+    detail:"La catégorie fixe les minima, les aires de protection et les rayons de virage en manœuvre à vue. Un avion volant plus vite que sa catégorie en approche doit appliquer les minima de la catégorie supérieure.",
+    exemple:() => ({ donnees:"Vso 78 kt",
+      etapes:["Vat = 1,3 × 78 = " + fmt(1.3*78,1) + " kt"],
+      resultat:"catégorie B" }) },
+
+  { cat:"procedures", titre:"Marges de franchissement d'obstacles",
+    formule:"Initiale 300 m (984 ft)  ·  intermédiaire 150 m (492 ft)  ·  finale classique 75 m (246 ft)",
+    regle:"MSA : 1000 ft au-dessus du plus haut obstacle dans un rayon de 25 NM",
+    detail:"En route, la marge est de 1000 ft, portée à 2000 ft en région montagneuse. En approche interrompue, la marge finale est de 50 m (164 ft) une fois le gradient de 2,5 % établi. Ces valeurs ne comprennent aucune correction de température : par temps froid, elles fondent.",
+    exemple:() => ({ donnees:"Segment intermédiaire, obstacle à 2100 ft",
+      etapes:["marge = 492 ft",
+              "altitude minimale = 2100 + 492 = " + fmt(2592) + " ft, arrondie au-dessus"],
+      resultat:"2600 ft" }) },
+
+  { cat:"procedures", titre:"Gradients réglementaires",
+    formule:"Décollage (PDG) : 3,3 % = 200 ft/NM   ·   Approche interrompue : 2,5 % = 152 ft/NM",
+    regle:"Un gradient supérieur est publié explicitement, avec l'altitude jusqu'à laquelle il s'applique",
+    detail:"Le gradient est une pente sol : par vent arrière ou par forte altitude densité, le taux de montée nécessaire pour le tenir augmente. Vérifier la faisabilité avant le décollage fait partie de la préparation IFR, pas de l'improvisation en vol.",
+    exemple:() => ({ donnees:"PDG 3,3 %, GS 110 kt",
+      etapes:["Vz = 110 × 3,3 × 1,01 = " + fmt(CALC.vzPct(110,3.3)) + " ft/min"],
+      resultat: fmt(CALC.vzPct(110,3.3)) + " ft/min" }) },
+
+  { cat:"procedures", titre:"Conversion visibilité — RVR",
+    formule:"Feux d'approche et de piste haute intensité : jour × 1,5, nuit × 2",
+    regle:"Autre balisage : jour × 1, nuit × 1,5 · sans balisage : jour × 1, nuit : conversion interdite",
+    detail:"La conversion ne s'applique jamais au décollage, ni quand une RVR est effectivement transmise, ni sous 800 m. Elle sert à décider d'entamer l'approche quand seule une visibilité météorologique est disponible.",
+    exemple:() => ({ donnees:"Visibilité 1200 m de jour, balisage haute intensité",
+      etapes:["RVR équivalente = 1200 × 1,5 = " + fmt(1800) + " m"],
+      resultat:"1800 m" }) },
+
+  { cat:"procedures", titre:"Niveaux de vol semi-circulaires",
+    formule:"Route magnétique 000–179° : niveaux impairs   ·   180–359° : niveaux pairs",
+    regle:"Le critère est la route, jamais le cap",
+    detail:"Règle OACI applicable en IFR hors espaces où le contrôle assigne les niveaux. Au-dessus du FL410, l'espacement passe à 4000 ft hors RVSM. L'altitude de transition est locale, le niveau de transition est donné par le contrôle.",
+    exemple:() => ({ donnees:"Route magnétique 265°",
+      etapes:["265 est dans la tranche 180–359"],
+      resultat:"niveaux pairs : FL80, FL100, FL120…" }) },
+];
+
+/* ──────────────────────────── Le générateur de quiz ────────────────────────
+   Chaque générateur tire des données au hasard et calcule la réponse avec les
+   mêmes fonctions que les fiches. Deux formes : réponse numérique avec une
+   tolérance, ou choix multiple pour les points de réglementation. */
+
+const rnd  = (min, max, pas = 1) => min + pas * Math.floor(Math.random() * ((max - min) / pas + 1));
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const cap3 = a => String(mod360(a)).padStart(3, "0");
+
+const GEN = {
+  descente: [
+    () => { const gs = rnd(90, 260, 10), a = pick([2.5, 3, 3.5]);
+      const r = CALC.vzDeg(gs, a);
+      return { enonce:`Vous suivez un plan à ${fmt(a,1).replace(".",",")}° avec une vitesse sol de ${gs} kt. Quel taux de descente ?`,
+        unite:"ft/min", reponse:r, tol:Math.max(30, r * 0.05),
+        formule:"Vz = GS × pente % × 1,01",
+        etapes:[`pente = tan ${fmt(a,1)}° = ${fmt(CALC.pentePct(a),2)} %`,
+                `Vz = ${gs} × ${fmt(CALC.pentePct(a),2)} × 1,01 = ${fmt(r)} ft/min`,
+                a === 3 ? `règle mentale : ${gs} × 5 = ${gs*5} ft/min` : `règle : GS × pente ≈ ${fmt(gs*CALC.pentePct(a))} ft/min`] }; },
+
+    () => { const fl = rnd(80, 350, 10), alt = rnd(2, 6) * 1000;
+      const dh = fl * 100 - alt, r = CALC.distDesc(dh, 3);
+      return { enonce:`Vous êtes au FL${fl} et devez être à ${fmt(alt)} ft. Combien de milles pour descendre sur un plan à 3° ?`,
+        unite:"NM", reponse:r, tol:Math.max(1, r * 0.06),
+        formule:"D = altitude à perdre / 1000 × 3",
+        etapes:[`altitude à perdre = ${fl*100} − ${fmt(alt)} = ${fmt(dh)} ft`,
+                `règle des 3 : ${fmt(dh/1000,1)} × 3 = ${fmt(dh/1000*3,1)} NM`,
+                `exact : ${fmt(dh)} / 318 = ${fmt(r,1)} NM`] }; },
+
+    () => { const d = rnd(2, 12), seuil = rnd(0, 12) * 100;
+      const h = CALC.hauteurPlan(d, 3), r = h + seuil;
+      return { enonce:`Plan à 3°, seuil à ${fmt(seuil)} ft. Quelle altitude afficher à ${d} NM du seuil ?`,
+        unite:"ft", reponse:r, tol:Math.max(50, r * 0.03),
+        formule:"H = D × 318 ft   (≈ 300 ft/NM + 10 %)",
+        etapes:[`hauteur sur le plan = ${d} × 318 = ${fmt(h)} ft`,
+                `altitude = ${fmt(h)} + ${fmt(seuil)} = ${fmt(r)} ft`] }; },
+
+    () => { const mda = rnd(6, 16) * 100, terrain = rnd(0, 8) * 100;
+      const hat = mda - terrain, r = hat / 318;
+      return { enonce:`MDA ${fmt(mda)} ft, altitude du terrain ${fmt(terrain)} ft. À quelle distance du seuil se situe le VDP ?`,
+        unite:"NM", reponse:r, tol:Math.max(0.3, r * 0.1),
+        formule:"D = HAT / 300",
+        etapes:[`HAT = ${fmt(mda)} − ${fmt(terrain)} = ${fmt(hat)} ft`,
+                `D = ${fmt(hat)} / 300 = ${fmt(hat/300,1)} NM (exact ${fmt(r,1)} NM)`] }; },
+
+    () => { const gs = rnd(80, 180, 10), pct = pick([2.5, 3.3, 4, 5]);
+      const r = CALC.vzPct(gs, pct);
+      return { enonce:`Une procédure impose un gradient de ${fmt(pct,1).replace(".",",")} %. À ${gs} kt sol, quel taux de montée minimum ?`,
+        unite:"ft/min", reponse:r, tol:Math.max(30, r * 0.05),
+        formule:"Vz = GS × gradient % × 1,01",
+        etapes:[`ft/NM = ${fmt(pct,1)} × 6076 / 100 = ${fmt(pct*FT_NM/100)} ft/NM`,
+                `Vz = ${fmt(pct*FT_NM/100)} × ${gs} / 60 = ${fmt(r)} ft/min`] }; },
+
+    () => { const h = rnd(8, 30) * 100, d = rnd(3, 12), gs = rnd(90, 200, 10);
+      const t = CALC.tempsMin(d, gs), r = h / t;
+      return { enonce:`Il vous reste ${fmt(h)} ft à perdre en ${d} NM à ${gs} kt sol. Quel taux de descente ?`,
+        unite:"ft/min", reponse:r, tol:Math.max(50, r * 0.06),
+        formule:"Vz = altitude restante / temps restant",
+        etapes:[`temps = 60 × ${d} / ${gs} = ${fmt(t,1)} min`,
+                `Vz = ${fmt(h)} / ${fmt(t,1)} = ${fmt(r)} ft/min`] }; },
+  ],
+
+  virages: [
+    () => { const tas = rnd(90, 220, 10), r = CALC.inclinaisonTaux1(tas);
+      return { enonce:`Quelle inclinaison pour tenir un taux 1 à ${tas} kt de vitesse propre ?`,
+        unite:"°", reponse:r, tol:2.5,
+        formule:"φ ≈ TAS / 10 + 7",
+        etapes:[`règle : ${tas} / 10 + 7 = ${fmt(tas/10+7)}°`,
+                `exact : ${fmt(r,1)}°`,
+                r > 25 ? "au-delà de 25°, le virage se fait à 25° et dure plus d'une minute" : "inclinaison compatible avec la limite de 25°"] }; },
+
+    () => { const gs = rnd(90, 250, 10), r = CALC.rayonTaux1(gs);
+      return { enonce:`Quel est le rayon d'un virage au taux 1 à ${gs} kt sol ?`,
+        unite:"NM", reponse:r, tol:Math.max(0.15, r * 0.12),
+        formule:"R ≈ GS / 188",
+        etapes:[`R = ${gs} / 188 = ${fmt(r,2)} NM`,
+                `diamètre de l'hippodrome = ${fmt(2*r,2)} NM`] }; },
+
+    () => { const d = rnd(30, 270, 15), r = d / 3;
+      return { enonce:`Combien de secondes pour un changement de cap de ${d}° au taux 1 ?`,
+        unite:"s", reponse:r, tol:3,
+        formule:"t = Δcap / 3",
+        etapes:[`t = ${d} / 3 = ${fmt(r)} s`] }; },
+
+    () => { const gs = rnd(100, 220, 10), d = pick([30, 45, 60, 90, 120]);
+      const R = CALC.rayonTaux1(gs), r = CALC.anticipation(R, d);
+      return { enonce:`Vous devez virer de ${d}° au taux 1 à ${gs} kt sol. De combien anticiper le point de virage ?`,
+        unite:"NM", reponse:r, tol:Math.max(0.15, r * 0.2),
+        formule:"avance = R × tan(Δcap / 2)",
+        etapes:[`R = ${gs} / 188 = ${fmt(R,2)} NM`,
+                `avance = ${fmt(R,2)} × tan ${d/2}° = ${fmt(r,2)} NM`] }; },
+
+    () => { const tas = rnd(150, 300, 10), b = pick([15, 20, 25, 30]);
+      const r = CALC.tauxVirage(tas, b);
+      return { enonce:`Quel taux de virage obtenez-vous à ${tas} kt avec ${b}° d'inclinaison ?`,
+        unite:"°/s", reponse:r, tol:Math.max(0.2, r * 0.12),
+        formule:"taux = g × tan φ / V",
+        etapes:[`taux = 9,81 × tan ${b}° / (${tas} × 0,514) = ${fmt(r,2)} °/s`,
+                r < 3 ? "inférieur au taux 1 : le virage sortira du chronométrage standard" : "supérieur au taux 1"] }; },
+  ],
+
+  vent: [
+    () => { const qfu = rnd(1, 36) * 10, ecart = pick([-60,-45,-30,-20,20,30,45,60]), v = rnd(8, 35);
+      const dir = mod360(qfu + ecart), c = CALC.composantes(dir, v, qfu);
+      const r = Math.abs(c.travers);
+      return { enonce:`Piste orientée ${cap3(qfu)}, vent du ${cap3(dir)} pour ${v} kt. Quelle composante de vent traversier ?`,
+        unite:"kt", reponse:r, tol:Math.max(1, r * 0.12),
+        formule:"travers = V × sin θ",
+        etapes:[`θ = ${Math.abs(ecart)}° ${ecart > 0 ? "par la droite" : "par la gauche"}`,
+                `travers = ${v} × sin ${Math.abs(ecart)}° = ${fmt(r,1)} kt`,
+                `horloge : ${Math.abs(ecart)}° → environ ${fmt(Math.abs(Math.sin(ecart*D2R))*100)} % du vent`] }; },
+
+    () => { const qfu = rnd(1, 36) * 10, ecart = pick([-60,-45,-30,-20,0,20,30,45,60]), v = rnd(8, 35);
+      const dir = mod360(qfu + ecart), r = CALC.composantes(dir, v, qfu).face;
+      return { enonce:`Piste orientée ${cap3(qfu)}, vent du ${cap3(dir)} pour ${v} kt. Quelle composante de face ?`,
+        unite:"kt", reponse:r, tol:Math.max(1, Math.abs(r) * 0.12),
+        formule:"face = V × cos θ",
+        etapes:[`θ = ${Math.abs(ecart)}°`,
+                `face = ${v} × cos ${Math.abs(ecart)}° = ${fmt(r,1)} kt`] }; },
+
+    () => { const route = rnd(1, 36) * 10, tas = rnd(90, 200, 10), v = rnd(10, 45, 5);
+      const ecart = pick([-90,-60,-45,-30,30,45,60,90]), dir = mod360(route + ecart);
+      const trav = CALC.composantes(dir, v, route).travers, r = Math.abs(CALC.derive(tas, trav));
+      return { enonce:`Route ${cap3(route)}, TAS ${tas} kt, vent du ${cap3(dir)} pour ${v} kt. Quelle dérive ?`,
+        unite:"°", reponse:r, tol:Math.max(1.5, r * 0.15),
+        formule:"dérive = 60 × travers / TAS",
+        etapes:[`travers = ${v} × sin ${Math.abs(ecart)}° = ${fmt(Math.abs(trav),1)} kt`,
+                `dérive = 60 × ${fmt(Math.abs(trav),1)} / ${tas} = ${fmt(r,1)}°`,
+                `le vent vient de la ${ecart > 0 ? "droite" : "gauche"} : cap = route ${ecart > 0 ? "+" : "−"} ${fmt(r)}° = ${cap3(Math.round(route + (ecart > 0 ? r : -r)))}`] }; },
+
+    () => { const d = rnd(20, 90, 10), ecart = rnd(1, 6) / 2, reste = rnd(20, 90, 10);
+      const err = CALC.unEn60(ecart, d), ferm = CALC.unEn60(ecart, reste), r = err + ferm;
+      return { enonce:`Après ${d} NM vous êtes à ${fmt(ecart,1).replace(".",",")} NM à droite de la route. Il reste ${reste} NM. De combien corriger pour rejoindre le point d'arrivée ?`,
+        unite:"°", reponse:r, tol:Math.max(1, r * 0.12),
+        formule:"correction = 60 × e / parcouru + 60 × e / restant",
+        etapes:[`erreur = 60 × ${fmt(ecart,1)} / ${d} = ${fmt(err,1)}°`,
+                `fermeture = 60 × ${fmt(ecart,1)} / ${reste} = ${fmt(ferm,1)}°`,
+                `total = ${fmt(r,1)}° vers la gauche`] }; },
+
+    () => { const tas = rnd(100, 250, 10), face = rnd(-30, 40, 5), der = rnd(0, 12, 2);
+      const r = tas * Math.cos(der * D2R) - face;
+      const vent = face >= 0 ? `${face} kt de face` : `${-face} kt de vent arrière`;
+      return { enonce:`TAS ${tas} kt, dérive ${der}°, ${vent}. Quelle vitesse sol ?`,
+        unite:"kt", reponse:r, tol:Math.max(3, r * 0.04),
+        formule:"GS = TAS × cos(dérive) − face",
+        etapes:[`GS = ${tas} × cos ${der}° ${face >= 0 ? "−" : "+"} ${Math.abs(face)} = ${fmt(r,1)} kt`,
+                `approximation : ${tas} ${face >= 0 ? "−" : "+"} ${Math.abs(face)} = ${tas - face} kt`] }; },
+  ],
+
+  altimetrie: [
+    () => { const alt = rnd(0, 40) * 100, qnh = rnd(975, 1040);
+      const r = CALC.altPress(alt, qnh);
+      return { enonce:`Terrain à ${fmt(alt)} ft, QNH ${qnh}. Quelle altitude pression ?`,
+        unite:"ft", reponse:r, tol:Math.max(60, Math.abs(r) * 0.04),
+        formule:"Zp = altitude + (1013 − QNH) × 27",
+        etapes:[`écart = 1013 − ${qnh} = ${fmt(1013-qnh)} hPa`,
+                `Zp = ${fmt(alt)} + ${fmt(1013-qnh)} × 27 = ${fmt(r)} ft`] }; },
+
+    () => { const fl = rnd(30, 350, 10), oat = rnd(-60, 25, 5);
+      const r = oat - CALC.tempISA(fl * 100);
+      return { enonce:`Au FL${fl}, la température extérieure est de ${oat} °C. Quelle déviation par rapport à la standard ?`,
+        unite:"°C", reponse:r, tol:2,
+        formule:"ΔISA = OAT − (15 − 2 × alt/1000)",
+        etapes:[`T standard = 15 − 2 × ${fl/10} = ${fmt(CALC.tempISA(fl*100),1)} °C`,
+                `ΔISA = ${oat} − (${fmt(CALC.tempISA(fl*100),1)}) = ${r >= 0 ? "+" : ""}${fmt(r,1)} °C`] }; },
+
+    () => { const zp = rnd(0, 80) * 100, oat = rnd(-20, 40, 5);
+      const r = CALC.altDens(zp, oat);
+      return { enonce:`Altitude pression ${fmt(zp)} ft, température ${oat} °C. Quelle altitude densité ?`,
+        unite:"ft", reponse:r, tol:Math.max(150, Math.abs(r) * 0.05),
+        formule:"Zd = Zp + 120 × ΔISA",
+        etapes:[`T standard = ${fmt(CALC.tempISA(zp),1)} °C`,
+                `ΔISA = ${oat} − (${fmt(CALC.tempISA(zp),1)}) = ${fmt(oat-CALC.tempISA(zp),1)} °C`,
+                `Zd = ${fmt(zp)} + 120 × ${fmt(oat-CALC.tempISA(zp),1)} = ${fmt(r)} ft`] }; },
+
+    () => { const h = rnd(5, 30) * 100, t0 = rnd(-35, -5, 5);
+      const r = CALC.correctionFroid(h, t0);
+      return { enonce:`Température au sol ${t0} °C. Quelle correction ajouter à une hauteur publiée de ${fmt(h)} ft au-dessus du terrain ?`,
+        unite:"ft", reponse:r, tol:Math.max(25, r * 0.2),
+        formule:"≈ 4 % de la hauteur par 10 °C sous la standard",
+        etapes:[`ΔISA ≈ ${t0} − 15 = ${t0-15} °C`,
+                `règle : ${fmt(h)} × 4 % × ${fmt((15-t0)/10,1)} = ${fmt(h*0.04*(15-t0)/10)} ft`,
+                `formule OACI : ${fmt(r)} ft`] }; },
+
+    () => { const cas = rnd(120, 300, 10), fl = rnd(50, 350, 10);
+      const oat = Math.round(CALC.tempISA(fl * 100) + rnd(-10, 10, 5));
+      const r = CALC.casVersTas(cas, fl * 100, oat).tas;
+      return { enonce:`CAS ${cas} kt au FL${fl}, température ${oat} °C. Quelle vitesse propre ?`,
+        unite:"kt", reponse:r, tol:Math.max(8, r * 0.05),
+        formule:"TAS ≈ CAS × (1 + 2 % par 1000 ft)",
+        etapes:[`règle des 2 % : ${cas} × ${fmt(1+0.02*fl/10,2)} = ${fmt(cas*(1+0.02*fl/10))} kt`,
+                `calcul compressible exact : ${fmt(r)} kt`,
+                `Mach correspondant : ${fmt(CALC.casVersTas(cas, fl*100, oat).mach,3)}`] }; },
+
+    () => { const tas = rnd(200, 500, 10), oat = rnd(-60, 0, 5);
+      const a = CALC.vitesseSon(oat), r = tas / a;
+      return { enonce:`TAS ${tas} kt par ${oat} °C. Quel nombre de Mach ?`,
+        unite:"M", reponse:r, tol:Math.max(0.02, r * 0.06),
+        formule:"a (kt) = 39 × √(T en K)   ·   M = TAS / a",
+        etapes:[`T = ${oat} + 273 = ${oat+273} K`,
+                `a = 39 × √${oat+273} = ${fmt(a)} kt`,
+                `M = ${tas} / ${fmt(a)} = ${fmt(r,3)}`] }; },
+
+    () => { const d = rnd(3, 30);
+      const r = d * 27;
+      return { enonce:`Vous volez avec un calage inférieur de ${d} hPa au calage réel. De combien l'altimètre se trompe-t-il en basse couche ?`,
+        unite:"ft", reponse:r, tol:Math.max(30, r * 0.12),
+        formule:"1 hPa ≈ 27 ft au niveau de la mer",
+        etapes:[`erreur = ${d} × 27 = ${fmt(r)} ft`,
+                "calage trop bas : l'altimètre indique moins que l'altitude réelle"] }; },
+  ],
+
+  temps: [
+    () => { const d = rnd(5, 120), gs = rnd(80, 300, 10);
+      const r = CALC.tempsMin(d, gs);
+      return { enonce:`Combien de minutes pour parcourir ${d} NM à ${gs} kt sol ?`,
+        unite:"min", reponse:r, tol:Math.max(0.6, r * 0.05),
+        formule:"t = 60 × D / GS",
+        etapes:[`${gs} / 60 = ${fmt(gs/60,2)} NM par minute`,
+                `t = ${d} / ${fmt(gs/60,2)} = ${fmt(r,1)} min`] }; },
+
+    () => { const gs = rnd(80, 300, 10), t = rnd(5, 45);
+      const r = gs * t / 60;
+      return { enonce:`Quelle distance parcourue en ${t} min à ${gs} kt sol ?`,
+        unite:"NM", reponse:r, tol:Math.max(1, r * 0.05),
+        formule:"D = GS × t / 60",
+        etapes:[`D = ${gs} × ${t} / 60 = ${fmt(r,1)} NM`] }; },
+
+    () => { const conso = rnd(25, 60), t = rnd(40, 200, 5);
+      const r = conso * t / 60;
+      return { enonce:`Consommation ${conso} L/h, temps de vol ${t} min. Quel carburant pour le trajet ?`,
+        unite:"L", reponse:r, tol:Math.max(1, r * 0.05),
+        formule:"Q = consommation × temps",
+        etapes:[`Q = ${conso} × ${t} / 60 = ${fmt(r,1)} L`] }; },
+
+    () => { const d = rnd(200, 700, 20), go = rnd(120, 200, 10), gh = go + rnd(-60, 60, 10);
+      const r = CALC.pet(d, go, gh);
+      return { enonce:`Étape de ${d} NM, ${go} kt sol à l'aller et ${gh} kt au retour. À quelle distance du départ se trouve le point d'égal temps ?`,
+        unite:"NM", reponse:r, tol:Math.max(5, r * 0.05),
+        formule:"D_PET = D × GS_retour / (GS_aller + GS_retour)",
+        etapes:[`D = ${d} × ${gh} / (${go} + ${gh}) = ${fmt(r,1)} NM`,
+                `soit ${fmt(CALC.tempsMin(r,go))} min après le départ`] }; },
+
+    () => { const e = rnd(3, 7), go = rnd(120, 220, 10), gh = go + rnd(-70, 70, 10);
+      const t = CALC.pnrTemps(e, go, gh), r = t * 60;
+      return { enonce:`Autonomie utilisable ${e} h, ${go} kt sol à l'aller et ${gh} kt au retour. Dans combien de minutes le point de non-retour ?`,
+        unite:"min", reponse:r, tol:Math.max(5, r * 0.05),
+        formule:"t_PNR = E × GS_retour / (GS_aller + GS_retour)",
+        etapes:[`t = ${e} × ${gh} / (${go} + ${gh}) = ${fmt(t,2)} h = ${fmt(r)} min`,
+                `distance = ${fmt(t*go)} NM`] }; },
+
+    () => { const d = rnd(3, 8) + rnd(0, 9) / 10, gs = rnd(80, 160, 5);
+      const r = 3600 * d / gs;
+      return { enonce:`${fmt(d,1).replace(".",",")} NM entre le repère final et le point d'approche interrompue, ${gs} kt sol. Combien de secondes ?`,
+        unite:"s", reponse:r, tol:Math.max(5, r * 0.05),
+        formule:"t = 3600 × D / GS",
+        etapes:[`t = 3600 × ${fmt(d,1)} / ${gs} = ${fmt(r)} s`,
+                `soit ${Math.floor(r/60)} min ${fmt(r%60)} s`] }; },
+  ],
+
+  procedures: [
+    () => { const fl = pick([70, 120, 140, 160, 190, 240, 300, 360]);
+      const bonne = fl <= 140 ? "230 kt" : fl <= 200 ? "240 kt" : fl <= 340 ? "265 kt" : "Mach 0,83";
+      return { enonce:`Quelle vitesse indiquée maximale en attente au FL${fl} (catégorie C, hors turbulence) ?`,
+        choix:["230 kt", "240 kt", "265 kt", "Mach 0,83"], bonne,
+        formule:"≤ FL140 : 230 kt · FL140–200 : 240 kt · FL200–340 : 265 kt · > FL340 : M 0,83",
+        etapes:[`le FL${fl} est dans la tranche ${fl <= 140 ? "jusqu'au FL140" : fl <= 200 ? "FL140 à FL200" : fl <= 340 ? "FL200 à FL340" : "au-dessus du FL340"}`] }; },
+
+    () => { const axe = rnd(1, 36) * 10, cap = rnd(1, 36) * 10, droite = Math.random() < 0.5;
+      const bonne = CALC.entreeAttente(cap, axe, droite);
+      const r = droite ? mod360(cap - axe) : mod360(axe - cap);
+      return { enonce:`Attente à ${droite ? "droite" : "gauche"}, axe rapproché ${cap3(axe)}. Vous arrivez au cap ${cap3(cap)}. Quelle entrée ?`,
+        choix:["directe", "parallèle", "décalée"], bonne,
+        formule:"écart cap/axe dans le sens des virages : 0–180 directe · 180–290 parallèle · 290–360 décalée",
+        etapes:[`écart = ${droite ? `${cap3(cap)} − ${cap3(axe)}` : `${cap3(axe)} − ${cap3(cap)}`} = ${fmt(r)}°`,
+                `${fmt(r)}° → entrée ${bonne}`,
+                "tolérance de ± 5° de part et d'autre des limites de secteur"] }; },
+
+    () => { const vso = rnd(50, 160);
+      const vat = 1.3 * vso;
+      const bonne = vat < 91 ? "A" : vat <= 120 ? "B" : vat <= 140 ? "C" : vat <= 165 ? "D" : "E";
+      return { enonce:`Un avion a une Vso de ${vso} kt à la masse maximale à l'atterrissage. Quelle catégorie d'approche ?`,
+        choix:["A", "B", "C", "D", "E"], bonne,
+        formule:"Vat = 1,3 × Vso   ·   A < 91 · B 91–120 · C 121–140 · D 141–165 · E 166–210",
+        etapes:[`Vat = 1,3 × ${vso} = ${fmt(vat,1)} kt`,
+                `catégorie ${bonne}`] }; },
+
+    () => { const rm = rnd(0, 359);
+      const bonne = rm < 180 ? "niveaux impairs" : "niveaux pairs";
+      return { enonce:`Vous suivez une route magnétique de ${cap3(rm)}. Quels niveaux de vol IFR selon la règle semi-circulaire ?`,
+        choix:["niveaux impairs", "niveaux pairs"], bonne,
+        formule:"000–179° : impairs   ·   180–359° : pairs",
+        etapes:[`${cap3(rm)} est dans la tranche ${rm < 180 ? "000–179" : "180–359"}`,
+                "le critère est la route, pas le cap"] }; },
+
+    () => { const fl = pick([80, 100, 130, 140, 150, 200, 250]);
+      const bonne = fl <= 140 ? "1 minute" : "1 minute 30";
+      return { enonce:`Quelle durée de branche rapprochée en attente au FL${fl} ?`,
+        choix:["1 minute", "1 minute 30", "2 minutes"], bonne,
+        formule:"1 min jusqu'au FL140 inclus, 1 min 30 au-dessus",
+        etapes:["le chronométrage porte sur la branche rapprochée ; c'est l'éloignement qu'on ajuste au vent"] }; },
+
+    () => { const seg = pick(["initiale", "intermédiaire", "finale d'une approche classique"]);
+      const table = { "initiale":"300 m (984 ft)", "intermédiaire":"150 m (492 ft)",
+                      "finale d'une approche classique":"75 m (246 ft)" };
+      return { enonce:`Quelle marge minimale de franchissement d'obstacles en phase ${seg} ?`,
+        choix:["75 m (246 ft)", "150 m (492 ft)", "300 m (984 ft)", "600 m (2000 ft)"],
+        bonne: table[seg],
+        formule:"Initiale 300 m · intermédiaire 150 m · finale classique 75 m · en route 300 m (600 m en montagne)",
+        etapes:["en région montagneuse, la marge en route est doublée"] }; },
+
+    () => { const vis = pick([800, 1000, 1200, 1500, 2000]), nuit = Math.random() < 0.5;
+      const f = nuit ? 2 : 1.5, r = vis * f;
+      return { enonce:`Visibilité météorologique ${fmt(vis)} m, balisage d'approche et de piste haute intensité, ${nuit ? "de nuit" : "de jour"}. Quelle RVR équivalente ?`,
+        choix:[fmt(vis*1)+" m", fmt(vis*1.5)+" m", fmt(vis*2)+" m"], bonne: fmt(r)+" m",
+        formule:"Haute intensité : jour × 1,5, nuit × 2",
+        etapes:[`${fmt(vis)} × ${fmt(f,1)} = ${fmt(r)} m`,
+                "conversion interdite au décollage et lorsqu'une RVR est transmise"] }; },
+  ],
+};
+
+/* ────────────────────────────── Interface ───────────────────────────────── */
+
+function NavPills({ current }) {
+  const pages = [
+    { key:"ifr",    href:"ifr.html",    label:"Fiches" },
+    { key:"pilote", href:"pilote.html", label:"Outils" },
+  ];
+  return (
+    <div style={{display:"flex",gap:5}}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
+function Section({ label, children }) {
+  return <div style={{marginBottom:18}}>
+    <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1.5,marginBottom:9}}>{label}</div>
+    {children}
+  </div>;
+}
+
+function Formule({ texte, color }) {
+  return <div style={{background:"#0F172A",borderRadius:10,padding:"9px 11px",fontSize:11.5,fontWeight:600,
+    color:"#E2E8F0",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",lineHeight:1.5,
+    borderLeft:`3px solid ${color}`,overflowX:"auto",whiteSpace:"pre-wrap"}}>{texte}</div>;
+}
+
+function Fiche({ fiche, ouverte, onToggle }) {
+  const c = CATS[fiche.cat];
+  const ex = useMemo(() => ouverte ? fiche.exemple() : null, [ouverte, fiche]);
+  return (
+    <div style={{background:"#F8FAFC",border:`1px solid ${ouverte ? c.color + "55" : "#E2E8F0"}`,borderRadius:14,marginBottom:8,overflow:"hidden"}}>
+      <button onClick={onToggle} style={{width:"100%",background:"transparent",border:"none",padding:"11px 13px",textAlign:"left",cursor:"pointer",display:"flex",alignItems:"center",gap:9}}>
+        <div style={{width:26,height:26,borderRadius:8,background:c.color + "22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0}}>{c.emoji}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12.5,fontWeight:800,color:"#0F172A",lineHeight:1.25}}>{fiche.titre}</div>
+          <div style={{fontSize:9,color:c.color,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginTop:2}}>{c.label}</div>
+        </div>
+        <div style={{fontSize:11,color:"#CBD5E1",transform:ouverte ? "rotate(90deg)" : "none",transition:"transform .15s"}}>▶</div>
+      </button>
+      {ouverte && (
+        <div style={{padding:"0 13px 13px"}}>
+          <Formule texte={fiche.formule} color={c.color} />
+          <div style={{background:c.color + "14",borderRadius:9,padding:"8px 10px",marginTop:8,fontSize:11,color:"#0F172A",lineHeight:1.5}}>
+            <span style={{fontWeight:800}}>Règle mentale — </span>{fiche.regle}
+          </div>
+          <div style={{fontSize:11.5,color:"#475569",lineHeight:1.65,marginTop:9}}>{fiche.detail}</div>
+          <div style={{marginTop:10,background:"white",border:"1px solid #E2E8F0",borderRadius:10,padding:"9px 11px"}}>
+            <div style={{fontSize:9,fontWeight:800,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:5}}>Exemple</div>
+            <div style={{fontSize:11,color:"#0F172A",fontWeight:600,marginBottom:6}}>{ex.donnees}</div>
+            {ex.etapes.map((e, i) => (
+              <div key={i} style={{display:"flex",gap:6,fontSize:10.5,color:"#64748B",lineHeight:1.6}}>
+                <span style={{color:c.color,fontWeight:800}}>{i + 1}.</span><span>{e}</span>
+              </div>
+            ))}
+            <div style={{marginTop:7,fontSize:12,fontWeight:800,color:c.color}}>→ {ex.resultat}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Fiches() {
+  const [cat, setCat] = useState("toutes");
+  const [q, setQ] = useState("");
+  const [ouverte, setOuverte] = useState(null);
+
+  const liste = useMemo(() => {
+    const mots = q.trim().toLowerCase();
+    return FICHES.filter(f => (cat === "toutes" || f.cat === cat) &&
+      (!mots || (f.titre + " " + f.formule + " " + f.regle + " " + f.detail).toLowerCase().includes(mots)));
+  }, [cat, q]);
+
+  return (
+    <div>
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Rechercher une formule…" type="search"
+        style={{width:"100%",padding:"10px 13px",borderRadius:11,border:"1px solid #E2E8F0",background:"#F8FAFC",
+                fontSize:13,color:"#0F172A",marginBottom:10,outline:"none"}} />
+      <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:4,marginBottom:12}}>
+        {[["toutes", { court:"Tout", emoji:"" }], ...Object.entries(CATS)].map(([k, c]) => (
+          <button key={k} onClick={() => setCat(k)} style={{padding:"6px 12px",borderRadius:20,border:"none",flexShrink:0,
+            background:cat === k ? "#0F172A" : "#F1F5F9",color:cat === k ? "white" : "#64748B",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+            {c.emoji} {c.court}
+          </button>
+        ))}
+      </div>
+      {liste.length === 0 && <div style={{textAlign:"center",color:"#94A3B8",fontSize:12,padding:"30px 0"}}>Aucune fiche ne correspond.</div>}
+      {liste.map((f, i) => (
+        <Fiche key={f.titre} fiche={f} ouverte={ouverte === f.titre} onToggle={() => setOuverte(ouverte === f.titre ? null : f.titre)} />
+      ))}
+      <div style={{fontSize:10,color:"#94A3B8",textAlign:"center",padding:"6px 0 0"}}>{liste.length} fiche{liste.length > 1 ? "s" : ""}</div>
+    </div>
+  );
+}
+
+function Quiz() {
+  const [cats, setCats] = useState(Object.keys(CATS));
+  const [q, setQ] = useState(null);
+  const [rep, setRep] = useState("");
+  const [etat, setEtat] = useState("saisie");     // saisie · juste · faux · vu
+  const [score, setScore] = useState({ bon:0, total:0 });
+  const [serie, setSerie] = useState(0);
+  const [record, setRecord] = useState(0);
+  const champ = useRef(null);
+
+  useEffect(() => { try { setRecord(+(localStorage.getItem("ifr-record") || 0)); } catch (e) {} }, []);
+
+  function tirer(listeCats = cats) {
+    const dispo = listeCats.filter(c => GEN[c] && GEN[c].length);
+    if (!dispo.length) { setQ(null); return; }
+    const cat = pick(dispo);
+    setQ({ ...pick(GEN[cat])(), cat });
+    setRep(""); setEtat("saisie");
+  }
+
+  useEffect(() => { tirer(); }, []);
+
+  function basculerCat(k) {
+    const suivant = cats.includes(k) ? cats.filter(c => c !== k) : [...cats, k];
+    if (!suivant.length) return;
+    setCats(suivant);
+    if (!suivant.includes(q && q.cat)) tirer(suivant);
+  }
+
+  function valider(valeur) {
+    if (etat !== "saisie" || !q) return;
+    let juste;
+    if (q.choix) juste = valeur === q.bonne;
+    else {
+      const v = parseFloat(String(valeur).replace(",", ".").replace(/\s/g, ""));
+      if (isNaN(v)) return;
+      juste = Math.abs(v - q.reponse) <= q.tol;
+    }
+    setEtat(juste ? "juste" : "faux");
+    setScore(s => ({ bon: s.bon + (juste ? 1 : 0), total: s.total + 1 }));
+    const nouvelle = juste ? serie + 1 : 0;
+    setSerie(nouvelle);
+    if (nouvelle > record) { setRecord(nouvelle); try { localStorage.setItem("ifr-record", nouvelle); } catch (e) {} }
+  }
+
+  if (!q) return <div style={{padding:20,textAlign:"center",color:"#94A3B8"}}>Choisissez au moins un thème.</div>;
+  const c = CATS[q.cat];
+  const corrige = etat !== "saisie";
+
+  return (
+    <div>
+      <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:4,marginBottom:12}}>
+        {Object.entries(CATS).map(([k, cc]) => (
+          <button key={k} onClick={() => basculerCat(k)} style={{padding:"6px 12px",borderRadius:20,border:"none",flexShrink:0,
+            background:cats.includes(k) ? cc.color : "#F1F5F9",color:cats.includes(k) ? "white" : "#94A3B8",
+            fontSize:11,fontWeight:700,cursor:"pointer"}}>{cc.emoji} {cc.court}</button>
+        ))}
+      </div>
+
+      <div style={{display:"flex",gap:7,marginBottom:12}}>
+        {[["Score", score.total ? `${score.bon}/${score.total}` : "—"],
+          ["Série", String(serie)],
+          ["Record", String(record)]].map(([l, v]) => (
+          <div key={l} style={{flex:1,background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:11,padding:"7px 4px",textAlign:"center"}}>
+            <div style={{fontSize:14,fontWeight:800,color:"#0F172A"}}>{v}</div>
+            <div style={{fontSize:8.5,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.8,fontWeight:700}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{background:"#F8FAFC",border:`1px solid ${c.color}44`,borderRadius:16,padding:"14px 14px 15px"}}>
+        <div style={{fontSize:9,fontWeight:800,color:c.color,textTransform:"uppercase",letterSpacing:1,marginBottom:7}}>{c.emoji} {c.label}</div>
+        <div style={{fontSize:14,fontWeight:600,color:"#0F172A",lineHeight:1.5,marginBottom:13}}>{q.enonce}</div>
+
+        {q.choix ? (
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {q.choix.map(ch => {
+              const bonneRep = corrige && ch === q.bonne;
+              const mauvaise = corrige && ch === rep && ch !== q.bonne;
+              return <button key={ch} onClick={() => { setRep(ch); valider(ch); }} disabled={corrige}
+                style={{padding:"11px 13px",borderRadius:11,textAlign:"left",fontSize:13,fontWeight:700,cursor:corrige ? "default" : "pointer",
+                  border:`2px solid ${bonneRep ? "#10B981" : mauvaise ? "#EF4444" : "#E2E8F0"}`,
+                  background:bonneRep ? "#ECFDF5" : mauvaise ? "#FEF2F2" : "white",
+                  color:bonneRep ? "#065F46" : mauvaise ? "#991B1B" : "#0F172A"}}>
+                {bonneRep ? "✓ " : mauvaise ? "✗ " : ""}{ch}
+              </button>;
+            })}
+          </div>
+        ) : (
+          <div style={{display:"flex",gap:7,alignItems:"stretch"}}>
+            <div style={{flex:1,position:"relative"}}>
+              <input ref={champ} value={rep} onChange={e => setRep(e.target.value)} disabled={corrige}
+                inputMode="decimal" type="text" placeholder="Votre réponse"
+                onKeyDown={e => { if (e.key === "Enter") valider(rep); }}
+                style={{width:"100%",height:"100%",padding:"12px 46px 12px 13px",borderRadius:11,fontSize:16,fontWeight:700,
+                  border:`2px solid ${corrige ? "#E2E8F0" : c.color + "66"}`,background:"white",color:"#0F172A",outline:"none"}} />
+              <span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:12,fontWeight:700,color:"#94A3B8"}}>{q.unite}</span>
+            </div>
+            {!corrige && <button onClick={() => valider(rep)} style={{padding:"0 16px",borderRadius:11,border:"none",background:c.color,color:"white",fontSize:13,fontWeight:800,cursor:"pointer"}}>OK</button>}
+          </div>
+        )}
+
+        {!corrige && !q.choix && (
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:10,color:"#94A3B8"}}>
+            <span>Tolérance ± {fmt(q.tol, q.tol < 1 ? 2 : q.tol < 10 ? 1 : 0)} {q.unite}</span>
+            <button onClick={() => { setEtat("vu"); setSerie(0); }} style={{background:"none",border:"none",color:"#94A3B8",fontSize:10,fontWeight:700,textDecoration:"underline",cursor:"pointer"}}>Voir la réponse</button>
+          </div>
+        )}
+
+        {corrige && (
+          <div style={{marginTop:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"9px 11px",borderRadius:11,marginBottom:9,
+              background:etat === "juste" ? "#ECFDF5" : etat === "faux" ? "#FEF2F2" : "#F1F5F9",
+              color:etat === "juste" ? "#065F46" : etat === "faux" ? "#991B1B" : "#475569"}}>
+              <span style={{fontSize:16}}>{etat === "juste" ? "✓" : etat === "faux" ? "✗" : "→"}</span>
+              <div style={{fontSize:12,fontWeight:700}}>
+                {etat === "juste" ? "Juste" : etat === "faux" ? "Faux" : "Réponse"}
+                {!q.choix && <span style={{fontWeight:600}}> — {fmt(q.reponse, q.reponse < 10 ? 2 : q.reponse < 100 ? 1 : 0)} {q.unite}</span>}
+                {q.choix && <span style={{fontWeight:600}}> — {q.bonne}</span>}
+              </div>
+            </div>
+            <Formule texte={q.formule} color={c.color} />
+            <div style={{marginTop:8}}>
+              {q.etapes.map((e, i) => (
+                <div key={i} style={{display:"flex",gap:6,fontSize:11,color:"#475569",lineHeight:1.65}}>
+                  <span style={{color:c.color,fontWeight:800}}>{i + 1}.</span><span>{e}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => tirer()} style={{width:"100%",marginTop:12,padding:"13px",borderRadius:12,border:"none",background:"#0F172A",color:"white",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+              Question suivante →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!corrige && (
+        <button onClick={() => tirer()} style={{width:"100%",marginTop:10,padding:"11px",borderRadius:12,border:"1px solid #E2E8F0",background:"#F8FAFC",color:"#64748B",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          Passer cette question
+        </button>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [onglet, setOnglet] = useState("fiches");
+  const ONGLETS = { fiches:{ label:"Fiches", emoji:"📐" }, quiz:{ label:"Quiz", emoji:"🎯" } };
+
+  return (
+    <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
+        <div style={{background:"#0F172A",paddingTop:"env(safe-area-inset-top, 0px)"}}>
+          {!IS_APP && (
+            <div style={{padding:"14px 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+              <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+            </div>
+          )}
+        </div>
+        <div style={{background:"linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:9,color:"#93C5FD",letterSpacing:2,marginBottom:3,textTransform:"uppercase"}}>Vol aux instruments</div>
+              <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>Révision IFR</h1>
+              <div style={{fontSize:10,color:"#64748B",marginTop:2}}>{FICHES.length} formules · calcul mental</div>
+            </div>
+            <NavPills current="ifr" />
+          </div>
+        </div>
+        <div style={{flex:1,padding:"0 14px calc(40px + env(safe-area-inset-bottom, 0px))"}}>
+          <div style={{display:"flex",background:"#F1F5F9",borderRadius:12,padding:3,margin:"12px 0"}}>
+            {Object.entries(ONGLETS).map(([k, v]) => (
+              <button key={k} onClick={() => setOnglet(k)} style={{flex:1,padding:"9px 2px",borderRadius:10,border:"none",
+                background:onglet === k ? "white" : "transparent",color:onglet === k ? "#0F172A" : "#94A3B8",fontWeight:700,fontSize:12,
+                cursor:"pointer",boxShadow:onglet === k ? "0 1px 4px rgba(0,0,0,.1)" : "none",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                <span style={{fontSize:14}}>{v.emoji}</span>{v.label}
+              </button>
+            ))}
+          </div>
+          {onglet === "fiches" ? <Fiches /> : <Quiz />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

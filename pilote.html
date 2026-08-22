@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Outils" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Boîte à outils du pilote : descente, vent, virage, altimétrie, vitesses, carburant, attente, conversions, décodage METAR." />
+  <link rel="manifest" href="pilote.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/pilote-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/pilote-192.png" />
+  <title>Boîte à outils pilote</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #E8EDF5; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; overscroll-behavior: none; }
+    ::-webkit-scrollbar { display: none; }
+    button { -webkit-appearance: none; font-family: inherit; }
+    input, textarea { font-family: inherit; -webkit-appearance: none; }
+  </style>
+  <script>
+    // Installe l'application pour qu'elle fonctionne sans réseau
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+// Lancée depuis l'écran d'accueil : iOS affiche déjà sa vraie barre d'état.
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
+
+/* ───────────────────────── Constantes et calculs ─────────────────────────
+   Noyau de calcul commun avec ifr.html : les deux applications sont des pages
+   autonomes, mais elles partagent mot pour mot les mêmes fonctions, pour que la
+   révision et l'outil ne donnent jamais deux résultats différents. */
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const FT_NM = 6076.12;       // pieds dans un mille nautique
+const KT_MS = 0.514444;      // nœud en m/s
+const G     = 9.80665;
+const FT_M  = 0.3048;
+
+const round = (x, n = 0) => { const p = Math.pow(10, n); return Math.round(x * p) / p; };
+const fmt   = (x, n = 0) => round(x, n).toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const mod360 = a => ((a % 360) + 360) % 360;
+
+const CALC = {
+  // Descente et montée
+  pentePct:  deg => Math.tan(deg * D2R) * 100,
+  ftParNm:   deg => Math.tan(deg * D2R) * FT_NM,
+  vzPct:     (gs, pct) => gs * pct * FT_NM / 6000,          // ft/min pour un gradient en %
+  vzDeg:     (gs, deg) => gs * Math.tan(deg * D2R) * FT_NM / 60,
+  vzFtNm:    (gs, ftnm) => ftnm * gs / 60,
+  distDesc:  (dh, deg) => dh / (Math.tan(deg * D2R) * FT_NM), // NM pour perdre dh pieds
+  hauteurPlan: (nm, deg) => nm * Math.tan(deg * D2R) * FT_NM,
+
+  // Virages
+  inclinaisonTaux1: tas => Math.atan(3 * D2R * tas * KT_MS / G) * R2D,
+  tauxVirage: (tas, bank) => G * Math.tan(bank * D2R) / (tas * KT_MS) * R2D,  // °/s
+  rayon:      (gs, bank) => Math.pow(gs * KT_MS, 2) / (G * Math.tan(bank * D2R)) / 1852,
+  rayonTaux1: gs => gs * KT_MS / (3 * D2R) / 1852,
+  anticipation: (rayon, delta) => rayon * Math.tan(delta / 2 * D2R),
+
+  // Vent et navigation
+  composantes: (dirVent, forceVent, route) => {
+    const a = (dirVent - route) * D2R;
+    return { face: forceVent * Math.cos(a), travers: forceVent * Math.sin(a) };
+  },
+  derive:  (tas, travers) => Math.asin(Math.max(-1, Math.min(1, travers / tas))) * R2D,
+  unEn60:  (ecartNm, distNm) => 60 * ecartNm / distNm,
+  tempsMin: (nm, gs) => 60 * nm / gs,
+  pet:     (d, go, gh) => d * gh / (go + gh),
+  pnrTemps: (e, go, gh) => e * gh / (go + gh),
+
+  // Atmosphère et altimétrie
+  tempISA:  altFt => 15 - 1.98 * altFt / 1000,
+  altPress: (altFt, qnh) => altFt + (1013.25 - qnh) * 27,
+  altDens:  (paFt, oat) => paFt + 118.8 * (oat - (15 - 1.98 * paFt / 1000)),
+  pression: altFt => {                                      // Pa, atmosphère standard
+    const h = altFt * FT_M;
+    return h < 11000 ? 101325 * Math.pow(1 - 2.25577e-5 * h, 5.25588)
+                     : 22632.1 * Math.exp(-G * (h - 11000) / (287.053 * 216.65));
+  },
+  vitesseSon: tC => 20.0468 * Math.sqrt(tC + 273.15) / KT_MS, // kt
+  // Correction d'altitude par temps froid (PANS-OPS) : hauteur au-dessus de la
+  // source du calage, température de l'aérodrome, élévation de l'aérodrome.
+  correctionFroid: (hFt, t0, elevFt = 0) => {
+    const dISA = t0 - (15 - 1.98 * elevFt / 1000);
+    if (dISA >= 0) return 0;
+    const H = hFt * FT_M;
+    return (H * (-dISA) / (273 + t0 - 0.5 * 0.0065 * H)) / FT_M;
+  },
+  // CAS → TAS et Mach, formule compressible (exacte, pas la règle des 2 %/1000 ft)
+  casVersTas: (cas, paFt, oat) => {
+    const P0 = 101325, a0 = 340.294;
+    const P  = CALC.pression(paFt);
+    const v  = cas * KT_MS;
+    const qc = P0 * (Math.pow(1 + 0.2 * Math.pow(v / a0, 2), 3.5) - 1);
+    const M  = Math.sqrt(5 * (Math.pow(qc / P + 1, 2 / 7) - 1));
+    const a  = 20.0468 * Math.sqrt(oat + 273.15);
+    return { tas: M * a / KT_MS, mach: M };
+  },
+  // Secteur d'entrée en attente : cap d'arrivée / axe rapproché (OACI Doc 8168)
+  entreeAttente: (capArrivee, axeRapproche, droite = true) => {
+    const r = droite ? mod360(capArrivee - axeRapproche) : mod360(axeRapproche - capArrivee);
+    if (r >= 180 && r < 290) return "parallèle";
+    if (r >= 290) return "décalée";
+    return "directe";
+  },
+};
+
+
+/* ─────────────────────────── Briques d'interface ────────────────────────── */
+
+// Les valeurs saisies survivent à la fermeture de l'application : en vol, on
+// rouvre un outil pour ajuster un chiffre, pas pour tout ressaisir.
+function useEtat(cle, initial) {
+  const [v, setV] = useState(() => {
+    try { const s = localStorage.getItem("pilote-" + cle); return s === null ? initial : JSON.parse(s); }
+    catch (e) { return initial; }
+  });
+  useEffect(() => { try { localStorage.setItem("pilote-" + cle, JSON.stringify(v)); } catch (e) {} }, [v]);
+  return [v, setV];
+}
+
+const num  = s => { const v = parseFloat(String(s).replace(",", ".")); return isNaN(v) ? null : v; };
+const cap3 = a => String(mod360(Math.round(a))).padStart(3, "0");
+const ok  = (...vals) => vals.every(v => v !== null && v !== undefined && isFinite(v));
+
+function Champ({ label, valeur, onChange, unite, large }) {
+  return (
+    <div style={{gridColumn:large ? "span 2" : "auto"}}>
+      <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.8,marginBottom:4}}>{label}</div>
+      <div style={{position:"relative"}}>
+        <input value={valeur} onChange={e => onChange(e.target.value)} inputMode="decimal" type="text"
+          style={{width:"100%",padding:"10px 40px 10px 11px",borderRadius:10,border:"1px solid #E2E8F0",background:"#F8FAFC",
+                  fontSize:16,fontWeight:700,color:"#0F172A",outline:"none"}} />
+        <span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:10,fontWeight:700,color:"#94A3B8"}}>{unite}</span>
+      </div>
+    </div>
+  );
+}
+
+function Grille({ children }) {
+  return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:12}}>{children}</div>;
+}
+
+function Choix({ label, options, valeur, onChange, couleur }) {
+  return (
+    <div style={{marginBottom:12}}>
+      {label && <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.8,marginBottom:5}}>{label}</div>}
+      <div style={{display:"flex",gap:4,background:"#F1F5F9",borderRadius:11,padding:3}}>
+        {options.map(o => (
+          <button key={o.v} onClick={() => onChange(o.v)} style={{flex:1,padding:"8px 4px",borderRadius:9,border:"none",
+            background:valeur === o.v ? couleur : "transparent",color:valeur === o.v ? "white" : "#64748B",
+            fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{o.l}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Res({ label, valeur, unite, note, couleur, fort }) {
+  return (
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:10,
+      padding:fort ? "11px 12px" : "8px 12px",background:fort ? couleur + "14" : "transparent",
+      borderRadius:10,borderBottom:fort ? "none" : "1px solid #F1F5F9"}}>
+      <div style={{minWidth:0}}>
+        <div style={{fontSize:fort ? 12 : 11,fontWeight:fort ? 800 : 600,color:fort ? "#0F172A" : "#64748B"}}>{label}</div>
+        {note && <div style={{fontSize:9.5,color:"#94A3B8",marginTop:1,lineHeight:1.4}}>{note}</div>}
+      </div>
+      <div style={{whiteSpace:"nowrap",fontSize:fort ? 20 : 14,fontWeight:800,color:valeur === "—" ? "#CBD5E1" : (fort ? couleur : "#0F172A")}}>
+        {valeur}<span style={{fontSize:fort ? 11 : 9,fontWeight:700,color:"#94A3B8",marginLeft:3}}>{valeur === "—" ? "" : unite}</span>
+      </div>
+    </div>
+  );
+}
+
+function Bloc({ titre, children }) {
+  return <div style={{marginTop:14}}>
+    {titre && <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1.2,marginBottom:6}}>{titre}</div>}
+    <div style={{background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:13,padding:"5px 3px"}}>{children}</div>
+  </div>;
+}
+
+function Note({ children, couleur }) {
+  return <div style={{marginTop:12,background:couleur + "12",borderLeft:`3px solid ${couleur}`,borderRadius:"0 10px 10px 0",
+    padding:"9px 11px",fontSize:10.5,color:"#475569",lineHeight:1.6}}>{children}</div>;
+}
+
+const V = (x, n = 0, cond = true) => (cond && x !== null && isFinite(x)) ? fmt(x, n) : "—";
+
+/* ─────────────────────────────── Les outils ─────────────────────────────── */
+
+function OutilDescente({ couleur }) {
+  const [de, setDe]   = useEtat("desc-de", "10000");
+  const [vers, setV2] = useEtat("desc-vers", "3000");
+  const [gs, setGs]   = useEtat("desc-gs", "150");
+  const [plan, setPlan] = useEtat("desc-plan", "3");
+  const [dec, setDec] = useEtat("desc-dec", "0");
+
+  const a = num(de), b = num(vers), g = num(gs), p = num(plan), d = num(dec) || 0;
+  const dh   = ok(a, b) ? a - b : null;
+  const dist = ok(dh, p) && p > 0 ? CALC.distDesc(dh, p) : null;
+  const vz   = ok(g, p) ? CALC.vzDeg(g, p) : null;
+  const tot  = ok(dist) ? dist + d / 10 : null;
+  const tps  = ok(dist, g) ? CALC.tempsMin(dist, g) : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Altitude actuelle" valeur={de} onChange={setDe} unite="ft" />
+        <Champ label="Altitude visée" valeur={vers} onChange={setV2} unite="ft" />
+        <Champ label="Vitesse sol" valeur={gs} onChange={setGs} unite="kt" />
+        <Champ label="Plan" valeur={plan} onChange={setPlan} unite="°" />
+        <Champ label="Vitesse à réduire" valeur={dec} onChange={setDec} unite="kt" large />
+      </Grille>
+      <Choix options={[{v:"2.5",l:"2,5°"},{v:"3",l:"3°"},{v:"3.5",l:"3,5°"},{v:"5",l:"5°"}]} valeur={plan} onChange={setPlan} couleur={couleur} />
+
+      <Bloc>
+        <Res fort couleur={couleur} label="Début de descente" valeur={V(tot, 1)} unite="NM avant le point" note={ok(d) && d > 0 ? `dont ${fmt(d/10,1)} NM de décélération` : "3 NM par 1000 ft sur un plan à 3°"} />
+        <Res label="Altitude à perdre" valeur={V(dh)} unite="ft" couleur={couleur} />
+        <Res label="Distance de descente" valeur={V(dist, 1)} unite="NM" couleur={couleur} />
+        <Res label="Taux de descente" valeur={V(vz)} unite="ft/min" note={ok(g) ? `règle mentale : ${fmt(g * 5)} ft/min (GS × 5)` : null} couleur={couleur} />
+        <Res label="Durée de la descente" valeur={V(tps, 1)} unite="min" couleur={couleur} />
+        <Res label="Gradient" valeur={ok(p) ? fmt(CALC.pentePct(p), 2) : "—"} unite="%" note={ok(p) ? `${fmt(CALC.ftParNm(p))} ft/NM` : null} couleur={couleur} />
+      </Bloc>
+
+      {ok(p, b) && (
+        <Bloc titre="Altitude sur le plan">
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"6px 8px"}}>
+            {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map(nm => (
+              <div key={nm} style={{flex:"1 0 18%",background:"white",border:"1px solid #E2E8F0",borderRadius:8,padding:"5px 2px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:"#94A3B8",fontWeight:700}}>{nm} NM</div>
+                <div style={{fontSize:11.5,fontWeight:800,color:"#0F172A"}}>{fmt(CALC.hauteurPlan(nm, p) + b)}</div>
+              </div>
+            ))}
+          </div>
+        </Bloc>
+      )}
+      <Note couleur={couleur}>Table calculée depuis l'altitude visée, prise comme altitude du seuil. Ajouter 1 NM par tranche de 10 kt à réduire, et allonger encore par vent arrière.</Note>
+    </div>
+  );
+}
+
+function OutilMontee({ couleur }) {
+  const [mode, setMode] = useEtat("mont-mode", "pct");
+  const [grad, setGrad] = useEtat("mont-grad", "3.3");
+  const [gs, setGs]     = useEtat("mont-gs", "110");
+  const [vz, setVz]     = useEtat("mont-vz", "700");
+  const [dist, setDist] = useEtat("mont-dist", "5");
+
+  const g = num(gs), d = num(dist);
+  const pct = mode === "pct" ? num(grad) : (num(grad) !== null ? num(grad) * 100 / FT_NM : null);
+  const ftnm = ok(pct) ? pct * FT_NM / 100 : null;
+  const vzReq = ok(g, pct) ? CALC.vzPct(g, pct) : null;
+  const vzSaisi = num(vz);
+  const pctObtenu = ok(vzSaisi, g) && g > 0 ? vzSaisi * 6000 / (g * FT_NM) : null;
+  const gain = ok(ftnm, d) ? ftnm * d : null;
+
+  return (
+    <div>
+      <Choix label="Gradient exprimé en" options={[{v:"pct",l:"pourcentage"},{v:"ftnm",l:"ft/NM"}]} valeur={mode} onChange={setMode} couleur={couleur} />
+      <Grille>
+        <Champ label="Gradient requis" valeur={grad} onChange={setGrad} unite={mode === "pct" ? "%" : "ft/NM"} />
+        <Champ label="Vitesse sol" valeur={gs} onChange={setGs} unite="kt" />
+        <Champ label="Taux réalisé" valeur={vz} onChange={setVz} unite="ft/min" />
+        <Champ label="Distance" valeur={dist} onChange={setDist} unite="NM" />
+      </Grille>
+      <Bloc>
+        <Res fort couleur={couleur} label="Taux de montée minimum" valeur={V(vzReq)} unite="ft/min" note={ok(pct) ? `pour tenir ${fmt(pct, 1)} % à ${fmt(g)} kt sol` : null} />
+        <Res label="Gradient" valeur={V(pct, 2)} unite="%" note={ok(ftnm) ? `${fmt(ftnm)} ft/NM · ${fmt(Math.atan(pct/100)*R2D, 2)}°` : null} couleur={couleur} />
+        <Res label="Altitude gagnée" valeur={V(gain)} unite="ft" note={ok(d) ? `en ${fmt(d, 1)} NM` : null} couleur={couleur} />
+        <Res label="Gradient obtenu au taux saisi" valeur={V(pctObtenu, 2)} unite="%" note={ok(pctObtenu, pct) ? (pctObtenu >= pct ? "✓ supérieur au gradient requis" : "✗ inférieur au gradient requis") : null} couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>Minimums réglementaires : 3,3 % (200 ft/NM) au décollage, 2,5 % (152 ft/NM) en approche interrompue. Le gradient est une pente sol : le vent arrière et l'altitude densité augmentent le taux nécessaire.</Note>
+    </div>
+  );
+}
+
+function RoseVent({ route, dirVent, couleur }) {
+  const c = 80, r = 60;
+  const pt = (ang, ray) => [c + ray * Math.sin(ang * D2R), c - ray * Math.cos(ang * D2R)];
+  const rel = mod360(dirVent - route);
+  const [xv, yv] = pt(rel, r), [xv2, yv2] = pt(rel, 18);
+  const fleche = [pt(rel, 26), pt(rel + 9, 40), pt(rel - 9, 40)];
+  return (
+    <svg viewBox="0 0 160 172" style={{width:"100%",maxWidth:190,display:"block",margin:"0 auto 4px"}}>
+      <circle cx={c} cy={c} r={r} fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="1.5" />
+      {[0, 45, 90, 135, 180, 225, 270, 315].map(a => {
+        const [x1, y1] = pt(a, r - 6), [x2, y2] = pt(a, r);
+        return <line key={a} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#CBD5E1" strokeWidth="1.5" />;
+      })}
+      <line x1={c} y1={c + 52} x2={c} y2={c - 52} stroke={couleur} strokeWidth="3" />
+      <polygon points={`${c},${c - 62} ${c - 7},${c - 46} ${c + 7},${c - 46}`} fill={couleur} />
+      <text x={c} y={c + 70} textAnchor="middle" fontSize="10" fontWeight="700" fill={couleur}>route {cap3(route)}</text>
+      <text x={c} y={c + 82} textAnchor="middle" fontSize="9" fontWeight="600" fill="#EF4444">vent du {cap3(dirVent)}</text>
+      <line x1={xv} y1={yv} x2={xv2} y2={yv2} stroke="#EF4444" strokeWidth="3" />
+      <polygon points={fleche.map(p => p.join(",")).join(" ")} fill="#EF4444" />
+      <circle cx={c} cy={c} r="4" fill="#0F172A" />
+    </svg>
+  );
+}
+
+function OutilVent({ couleur }) {
+  const [route, setRoute] = useEtat("vent-route", "270");
+  const [tas, setTas]     = useEtat("vent-tas", "120");
+  const [dir, setDir]     = useEtat("vent-dir", "300");
+  const [force, setForce] = useEtat("vent-force", "20");
+
+  const rt = num(route), t = num(tas), dv = num(dir), fv = num(force);
+  const comp = ok(rt, dv, fv) ? CALC.composantes(dv, fv, rt) : null;
+  const der  = comp && ok(t) && t > 0 ? CALC.derive(t, comp.travers) : null;
+  const cap  = ok(der, rt) ? mod360(rt + der) : null;
+  const gs   = ok(der, t) && comp ? t * Math.cos(der * D2R) - comp.face : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Route suivie" valeur={route} onChange={setRoute} unite="°" />
+        <Champ label="Vitesse propre" valeur={tas} onChange={setTas} unite="kt" />
+        <Champ label="Vent — direction" valeur={dir} onChange={setDir} unite="°" />
+        <Champ label="Vent — force" valeur={force} onChange={setForce} unite="kt" />
+      </Grille>
+      {ok(rt, dv) && <RoseVent route={rt} dirVent={dv} couleur={couleur} />}
+      <Bloc>
+        <Res fort couleur={couleur} label="Cap à tenir" valeur={ok(cap) ? cap3(Math.round(cap)) : "—"} unite="°"
+             note={ok(der) ? `dérive de ${fmt(Math.abs(der), 1)}° vers la ${der > 0 ? "droite" : "gauche"}` : null} />
+        <Res fort couleur={couleur} label="Vitesse sol" valeur={V(gs)} unite="kt" />
+        <Res label={comp && comp.face >= 0 ? "Composante de face" : "Composante arrière"} valeur={comp ? fmt(Math.abs(comp.face), 1) : "—"} unite="kt" couleur={couleur} />
+        <Res label={comp && comp.travers >= 0 ? "Travers par la droite" : "Travers par la gauche"} valeur={comp ? fmt(Math.abs(comp.travers), 1) : "—"} unite="kt" couleur={couleur} />
+        <Res label="Angle vent / route" valeur={ok(rt, dv) ? fmt(Math.min(mod360(dv - rt), 360 - mod360(dv - rt))) : "—"} unite="°" couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>Vérification mentale : dérive ≈ 60 × travers / TAS, et méthode de l'horloge pour les composantes — 30° donne la moitié du vent en travers, 45° les sept dixièmes, 60° les neuf dixièmes.</Note>
+    </div>
+  );
+}
+
+function OutilVirage({ couleur }) {
+  const [mode, setMode] = useEtat("vir-mode", "taux1");
+  const [gs, setGs]     = useEtat("vir-gs", "140");
+  const [bank, setBank] = useEtat("vir-bank", "25");
+  const [delta, setDelta] = useEtat("vir-delta", "90");
+
+  const g = num(gs), d = num(delta);
+  const inc  = mode === "taux1" ? (ok(g) ? CALC.inclinaisonTaux1(g) : null) : num(bank);
+  const taux = ok(g, inc) && inc > 0 ? CALC.tauxVirage(g, inc) : null;
+  const ray  = ok(g, inc) && inc > 0 ? CALC.rayon(g, inc) : null;
+  const tDemi = ok(taux) ? 180 / taux : null;
+  const ant  = ok(ray, d) ? CALC.anticipation(ray, d) : null;
+  const tDelta = ok(taux, d) ? d / taux : null;
+
+  return (
+    <div>
+      <Choix label="Virage" options={[{v:"taux1",l:"au taux 1"},{v:"bank",l:"à inclinaison fixée"}]} valeur={mode} onChange={setMode} couleur={couleur} />
+      <Grille>
+        <Champ label="Vitesse sol" valeur={gs} onChange={setGs} unite="kt" />
+        {mode === "bank"
+          ? <Champ label="Inclinaison" valeur={bank} onChange={setBank} unite="°" />
+          : <Champ label="Changement de cap" valeur={delta} onChange={setDelta} unite="°" />}
+        {mode === "bank" && <Champ label="Changement de cap" valeur={delta} onChange={setDelta} unite="°" large />}
+      </Grille>
+      <Bloc>
+        <Res fort couleur={couleur} label="Inclinaison" valeur={V(inc, 1)} unite="°"
+             note={mode === "taux1" && ok(g) ? `règle mentale : ${fmt(g / 10 + 7)}° (GS/10 + 7)${inc > 25 ? " — au-delà de la limite de 25°" : ""}` : null} />
+        <Res fort couleur={couleur} label="Rayon de virage" valeur={V(ray, 2)} unite="NM" note={ok(ray) ? `diamètre ${fmt(2 * ray, 2)} NM` : null} />
+        <Res label="Taux de virage" valeur={V(taux, 2)} unite="°/s" note={ok(taux) ? (taux >= 2.9 ? "taux 1 ou plus" : "inférieur au taux 1 : chronométrage standard inadapté") : null} couleur={couleur} />
+        <Res label="Demi-tour" valeur={V(tDemi)} unite="s" couleur={couleur} />
+        <Res label={`Virage de ${ok(d) ? fmt(d) : "—"}°`} valeur={V(tDelta)} unite="s" couleur={couleur} />
+        <Res label="Anticipation du point de virage" valeur={V(ant, 2)} unite="NM" note="avance = R × tan(Δcap / 2)" couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>Les procédures publiées sont construites sur le taux 1 plafonné à 25° d'inclinaison. Au-delà d'environ 170 kt, 25° ne suffisent plus à tenir 3°/s : le virage s'élargit, d'où les vitesses maximales imposées en attente.</Note>
+    </div>
+  );
+}
+
+function OutilAltimetrie({ couleur }) {
+  const [alt, setAlt]   = useEtat("alt-alt", "2000");
+  const [qnh, setQnh]   = useEtat("alt-qnh", "1013");
+  const [oat, setOat]   = useEtat("alt-oat", "0");
+  const [elev, setElev] = useEtat("alt-elev", "500");
+  const [haut, setHaut] = useEtat("alt-haut", "2000");
+
+  const a = num(alt), q = num(qnh), t = num(oat), e = num(elev), h = num(haut);
+  const zp   = ok(a, q) ? CALC.altPress(a, q) : null;
+  const isa  = ok(zp) ? CALC.tempISA(zp) : null;
+  const dIsa = ok(t, isa) ? t - isa : null;
+  const zd   = ok(zp, t) ? CALC.altDens(zp, t) : null;
+  const qfe  = ok(q, e) ? q - e / 27 : null;
+  const corr = ok(h, t) ? CALC.correctionFroid(h, t, e || 0) : null;
+  const niveau = ok(zp) ? zp / 100 : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Altitude indiquée" valeur={alt} onChange={setAlt} unite="ft" />
+        <Champ label="QNH" valeur={qnh} onChange={setQnh} unite="hPa" />
+        <Champ label="Température extérieure" valeur={oat} onChange={setOat} unite="°C" />
+        <Champ label="Élévation du terrain" valeur={elev} onChange={setElev} unite="ft" />
+      </Grille>
+      <Bloc titre="Altitudes">
+        <Res fort couleur={couleur} label="Altitude pression" valeur={V(zp)} unite="ft" note={ok(niveau) ? `soit le FL${fmt(Math.round(niveau / 5) * 5)} arrondi` : null} />
+        <Res fort couleur={couleur} label="Altitude densité" valeur={V(zd)} unite="ft" note="performances : Zp + 120 ft par degré au-dessus de la standard" />
+        <Res label="Température standard" valeur={V(isa, 1)} unite="°C" couleur={couleur} />
+        <Res label="Déviation ISA" valeur={ok(dIsa) ? (dIsa >= 0 ? "+" : "") + fmt(dIsa, 1) : "—"} unite="°C" couleur={couleur} />
+        <Res label="QFE approché" valeur={V(qfe)} unite="hPa" note="QNH moins l'élévation divisée par 27" couleur={couleur} />
+      </Bloc>
+      <Bloc titre="Correction par temps froid">
+        <div style={{padding:"3px 9px 0"}}>
+          <Champ label="Hauteur publiée au-dessus du terrain" valeur={haut} onChange={setHaut} unite="ft" />
+        </div>
+        <Res fort couleur={couleur} label="Correction à ajouter" valeur={V(corr)} unite="ft"
+             note={ok(corr) && corr === 0 ? "température au-dessus de la standard : aucune correction" : "formule PANS-OPS, à ajouter aux altitudes minimales publiées"} />
+        <Res label="Altitude corrigée à afficher" valeur={ok(h, corr, e) ? fmt(h + e + corr) : "—"} unite="ft" note="hauteur publiée + élévation du terrain + correction" couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>La correction de température s'applique aux altitudes minimales publiées, jamais au calage altimétrique. Du chaud vers le froid, ou du haut vers le bas : l'avion est plus bas que ce qu'affiche l'altimètre.</Note>
+    </div>
+  );
+}
+
+function OutilVitesses({ couleur }) {
+  const [cas, setCas] = useEtat("vit-cas", "150");
+  const [fl, setFl]   = useEtat("vit-fl", "100");
+  const [oat, setOat] = useEtat("vit-oat", "-5");
+
+  const c = num(cas), f = num(fl), t = num(oat);
+  const zp = ok(f) ? f * 100 : null;
+  const r  = ok(c, zp, t) ? CALC.casVersTas(c, zp, t) : null;
+  const isa = ok(zp) ? CALC.tempISA(zp) : null;
+  const son = ok(t) ? CALC.vitesseSon(t) : null;
+  const sigma = ok(zp, t) ? (CALC.pression(zp) / (287.053 * (t + 273.15))) / 1.225 : null;
+  const eas = r && ok(sigma) ? r.tas * Math.sqrt(sigma) : null;
+  const regle = ok(c, f) ? c * (1 + 0.02 * f / 10) : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Vitesse corrigée (CAS)" valeur={cas} onChange={setCas} unite="kt" />
+        <Champ label="Niveau de vol" valeur={fl} onChange={setFl} unite="FL" />
+        <Champ label="Température extérieure" valeur={oat} onChange={setOat} unite="°C" large />
+      </Grille>
+      <Bloc>
+        <Res fort couleur={couleur} label="Vitesse propre (TAS)" valeur={r ? fmt(r.tas) : "—"} unite="kt"
+             note={ok(regle) ? `règle des 2 % par 1000 ft : ${fmt(regle)} kt` : null} />
+        <Res fort couleur={couleur} label="Nombre de Mach" valeur={r ? fmt(r.mach, 3) : "—"} unite="M" />
+        <Res label="Vitesse équivalente (EAS)" valeur={V(eas)} unite="kt" couleur={couleur} />
+        <Res label="Vitesse du son" valeur={V(son)} unite="kt" couleur={couleur} />
+        <Res label="Température standard" valeur={V(isa, 1)} unite="°C" note={ok(t, isa) ? `déviation ${t - isa >= 0 ? "+" : ""}${fmt(t - isa, 1)} °C` : null} couleur={couleur} />
+        <Res label="Pression au niveau" valeur={ok(zp) ? fmt(CALC.pression(zp) / 100) : "—"} unite="hPa" couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>Calcul compressible complet, pas la règle des 2 % : au-dessus du FL200 et de 250 kt l'écart entre les deux dépasse plusieurs nœuds. La CAS est l'IAS corrigée des erreurs d'installation, généralement confondue avec elle en croisière.</Note>
+    </div>
+  );
+}
+
+function OutilNavigation({ couleur }) {
+  const [dist, setDist] = useEtat("nav-dist", "120");
+  const [gs, setGs]     = useEtat("nav-gs", "150");
+  const [conso, setConso] = useEtat("nav-conso", "38");
+  const [reserve, setReserve] = useEtat("nav-reserve", "45");
+  const [degag, setDegag] = useEtat("nav-degag", "25");
+
+  const d = num(dist), g = num(gs), c = num(conso), rs = num(reserve), dg = num(degag);
+  const t    = ok(d, g) && g > 0 ? CALC.tempsMin(d, g) : null;
+  const trajet = ok(c, t) ? c * t / 60 : null;
+  const impr = ok(trajet) ? trajet * 0.05 : null;
+  const cDeg = ok(c, dg) ? c * dg / 60 : null;
+  const cRes = ok(c, rs) ? c * rs / 60 : null;
+  const total = ok(trajet, impr, cDeg, cRes) ? trajet + impr + cDeg + cRes : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Distance" valeur={dist} onChange={setDist} unite="NM" />
+        <Champ label="Vitesse sol" valeur={gs} onChange={setGs} unite="kt" />
+        <Champ label="Consommation" valeur={conso} onChange={setConso} unite="/h" />
+        <Champ label="Vers le dégagement" valeur={degag} onChange={setDegag} unite="min" />
+        <Champ label="Réserve finale" valeur={reserve} onChange={setReserve} unite="min" large />
+      </Grille>
+      <Bloc titre="Temps">
+        <Res fort couleur={couleur} label="Durée du trajet" valeur={ok(t) ? `${Math.floor(t / 60)} h ${fmt(t % 60)}` : "—"} unite="min"
+             note={ok(t) ? `${fmt(t)} minutes · ${fmt(g / 60, 2)} NM par minute` : null} />
+        <Res label="Distance en 10 minutes" valeur={ok(g) ? fmt(g / 6, 1) : "—"} unite="NM" couleur={couleur} />
+      </Bloc>
+      <Bloc titre="Bilan carburant">
+        <Res label="Trajet" valeur={V(trajet, 1)} unite="" couleur={couleur} />
+        <Res label="Imprévus (5 %)" valeur={V(impr, 1)} unite="" couleur={couleur} />
+        <Res label="Dégagement" valeur={V(cDeg, 1)} unite="" couleur={couleur} />
+        <Res label="Réserve finale" valeur={V(cRes, 1)} unite="" couleur={couleur} />
+        <Res fort couleur={couleur} label="Total minimum au décollage" valeur={V(total, 1)} unite="" note="hors roulage et supplément éventuel" />
+      </Bloc>
+      <Note couleur={couleur}>Les quantités reprennent l'unité de la consommation saisie, litres ou kilogrammes. Réserve finale IFR : 45 min pour un avion à hélice, 30 min pour une turbine, à la vitesse d'attente 1500 ft au-dessus du terrain de dégagement.</Note>
+    </div>
+  );
+}
+
+function OutilPetPnr({ couleur }) {
+  const [d, setD]   = useEtat("pet-d", "400");
+  const [go, setGo] = useEtat("pet-go", "150");
+  const [gh, setGh] = useEtat("pet-gh", "190");
+  const [e, setE]   = useEtat("pet-e", "4");
+
+  const D = num(d), O = num(go), H = num(gh), E = num(e);
+  const pet   = ok(D, O, H) && O + H > 0 ? CALC.pet(D, O, H) : null;
+  const tPet  = ok(pet, O) ? CALC.tempsMin(pet, O) : null;
+  const tPnr  = ok(E, O, H) && O + H > 0 ? CALC.pnrTemps(E, O, H) : null;
+  const dPnr  = ok(tPnr, O) ? tPnr * O : null;
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Distance de l'étape" valeur={d} onChange={setD} unite="NM" />
+        <Champ label="Autonomie utilisable" valeur={e} onChange={setE} unite="h" />
+        <Champ label="Vitesse sol aller" valeur={go} onChange={setGo} unite="kt" />
+        <Champ label="Vitesse sol retour" valeur={gh} onChange={setGh} unite="kt" />
+      </Grille>
+      <Bloc titre="Point d'égal temps">
+        <Res fort couleur={couleur} label="Distance du départ" valeur={V(pet, 1)} unite="NM"
+             note={ok(pet, D) ? `soit ${fmt(pet / D * 100)} % de l'étape` : null} />
+        <Res label="Temps depuis le départ" valeur={V(tPet)} unite="min" couleur={couleur} />
+        <Res label="Distance restante" valeur={ok(pet, D) ? fmt(D - pet, 1) : "—"} unite="NM" couleur={couleur} />
+      </Bloc>
+      <Bloc titre="Point de non-retour">
+        <Res fort couleur={couleur} label="Temps depuis le départ" valeur={ok(tPnr) ? fmt(tPnr * 60) : "—"} unite="min"
+             note={ok(tPnr) ? `${Math.floor(tPnr)} h ${fmt(tPnr % 1 * 60)}` : null} />
+        <Res label="Distance du départ" valeur={V(dPnr, 1)} unite="NM" couleur={couleur} />
+        <Res label="Au-delà de ce point" valeur={ok(dPnr, D) ? (dPnr >= D ? "arrivée assurée" : "retour impossible") : "—"} unite="" couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>L'autonomie utilisable est celle qui reste une fois la réserve finale mise de côté. Le point d'égal temps ne dépend que des deux vitesses sol ; le point de non-retour dépend en plus de l'autonomie.</Note>
+    </div>
+  );
+}
+
+function RoseAttente({ axe, droite, cap, couleur }) {
+  const c = 82, r = 62;
+  const pt = (a, ray) => [c + ray * Math.sin(a * D2R), c - ray * Math.cos(a * D2R)];
+  // Secteurs exprimés en écart au cap d'arrivée : 0–180 directe, 180–290 parallèle, 290–360 décalée
+  const secteur = (de, a) => {
+    const s = droite ? mod360(axe + de) : mod360(axe - de);
+    const e = droite ? mod360(axe + a)  : mod360(axe - a);
+    const [x1, y1] = pt(s, r), [x2, y2] = pt(e, r);
+    const balaye = mod360(a - de);
+    return `M ${c} ${c} L ${x1} ${y1} A ${r} ${r} 0 ${balaye > 180 ? 1 : 0} ${droite ? 1 : 0} ${x2} ${y2} Z`;
+  };
+  const [xc, yc] = pt(cap, r + 12), [xc2, yc2] = pt(cap, r - 6);
+  const [xa, ya] = pt(axe, r), [xa2, ya2] = pt(mod360(axe + 180), r);
+  return (
+    <svg viewBox="0 0 164 192" style={{width:"100%",maxWidth:210,display:"block",margin:"0 auto 6px"}}>
+      <path d={secteur(0, 180)}   fill="#10B98126" stroke="#10B981" strokeWidth="1" />
+      <path d={secteur(180, 290)} fill="#F59E0B26" stroke="#F59E0B" strokeWidth="1" />
+      <path d={secteur(290, 360)} fill="#8B5CF626" stroke="#8B5CF6" strokeWidth="1" />
+      <line x1={xa} y1={ya} x2={xa2} y2={ya2} stroke="#0F172A" strokeWidth="2" strokeDasharray="4 3" />
+      <line x1={xc2} y1={yc2} x2={xc} y2={yc} stroke="#EF4444" strokeWidth="3" />
+      <polygon points={`${xc2},${yc2} ${pt(cap + 12, r - 22).join(",")} ${pt(cap - 12, r - 22).join(",")}`} fill="#EF4444" />
+      <circle cx={c} cy={c} r="4" fill="#0F172A" />
+      <text x={c} y={186} textAnchor="middle" fontSize="9.5" fontWeight="700" fill="#64748B">
+        axe {cap3(axe)} · arrivée au cap {cap3(cap)}
+      </text>
+      {[["directe", "#10B981"], ["parallèle", "#F59E0B"], ["décalée", "#8B5CF6"]].map(([l, col], i) => (
+        <g key={l}><rect x={6 + i * 52} y={166} width="8" height="8" rx="2" fill={col} />
+          <text x={18 + i * 52} y={173.5} fontSize="8.5" fill="#64748B" fontWeight="600">{l}</text></g>
+      ))}
+    </svg>
+  );
+}
+
+function OutilAttente({ couleur }) {
+  const [axe, setAxe]   = useEtat("att-axe", "270");
+  const [cap, setCap]   = useEtat("att-cap", "180");
+  const [sens, setSens] = useEtat("att-sens", "droite");
+  const [fl, setFl]     = useEtat("att-fl", "80");
+  const [der, setDer]   = useEtat("att-der", "5");
+  const [cote, setCote] = useEtat("att-cote", "droite");
+
+  const a = num(axe), h = num(cap), f = num(fl);
+  const droite = sens === "droite";
+  const d = (num(der) || 0) * (cote === "droite" ? 1 : -1);
+  const type = ok(a, h) ? CALC.entreeAttente(h, a, droite) : null;
+  const ecart = ok(a, h) ? (droite ? mod360(h - a) : mod360(a - h)) : null;
+  const eloign = ok(a) ? mod360(a + 180 - 3 * d) : null;
+  const rappro = ok(a) ? mod360(a + d) : null;
+  const decal  = ok(a) ? mod360(a + (droite ? 150 : 210)) : null;
+  const vmax = ok(f) ? (f <= 140 ? "230 kt (170 kt en catégorie A/B)" : f <= 200 ? "240 kt" : f <= 340 ? "265 kt" : "Mach 0,83") : "—";
+  const chrono = ok(f) ? (f <= 140 ? "1 min" : "1 min 30") : "—";
+
+  const MODES = {
+    "directe":   "Au passage de la balise, virer du côté des virages pour prendre le cap d'éloignement et suivre l'hippodrome normalement.",
+    "parallèle": "Au passage de la balise, prendre le cap d'éloignement parallèle à l'axe, du côté non protégé, pendant une minute. Virer ensuite du côté non protégé de plus de 180° pour rejoindre l'axe rapproché ou la balise, puis reprendre l'attente.",
+    "décalée":   "Au passage de la balise, prendre un cap décalé de 30° de l'axe d'éloignement, du côté des virages, pendant une minute. Virer ensuite du côté des virages pour intercepter l'axe rapproché.",
+  };
+
+  return (
+    <div>
+      <Grille>
+        <Champ label="Axe rapproché" valeur={axe} onChange={setAxe} unite="°" />
+        <Champ label="Cap d'arrivée" valeur={cap} onChange={setCap} unite="°" />
+      </Grille>
+      <Choix label="Sens des virages" options={[{v:"droite",l:"à droite"},{v:"gauche",l:"à gauche"}]} valeur={sens} onChange={setSens} couleur={couleur} />
+      {ok(a, h) && <RoseAttente axe={a} droite={droite} cap={h} couleur={couleur} />}
+      <Bloc>
+        <Res fort couleur={couleur} label="Entrée" valeur={type ? type.charAt(0).toUpperCase() + type.slice(1) : "—"} unite=""
+             note={ok(ecart) ? `écart cap / axe dans le sens des virages : ${fmt(ecart)}°` : null} />
+        <div style={{padding:"4px 12px 10px",fontSize:11,color:"#475569",lineHeight:1.6}}>{type ? MODES[type] : ""}</div>
+        {type === "décalée" && <Res label="Cap décalé à prendre" valeur={ok(decal) ? cap3(decal) : "—"} unite="°" couleur={couleur} />}
+      </Bloc>
+      <Bloc titre="Chronométrage et vitesses">
+        <div style={{padding:"3px 9px 0"}}><Champ label="Niveau de vol" valeur={fl} onChange={setFl} unite="FL" /></div>
+        <Res label="Vitesse indiquée maximale" valeur={vmax} unite="" couleur={couleur} />
+        <Res label="Branche rapprochée" valeur={chrono} unite="" note="c'est l'éloignement qu'on ajuste au vent" couleur={couleur} />
+      </Bloc>
+      <Bloc titre="Correction de dérive">
+        <div style={{padding:"3px 9px 0"}}>
+          <Champ label="Dérive en rapprochement" valeur={der} onChange={setDer} unite="°" />
+          <div style={{height:9}} />
+          <Choix options={[{v:"droite",l:"correction à droite"},{v:"gauche",l:"correction à gauche"}]} valeur={cote} onChange={setCote} couleur={couleur} />
+        </div>
+        <Res label="Cap en rapprochement" valeur={ok(rappro) ? cap3(rappro) : "—"} unite="°" couleur={couleur} />
+        <Res fort couleur={couleur} label="Cap en éloignement" valeur={ok(eloign) ? cap3(eloign) : "—"} unite="°" note="triple dérive, appliquée du côté opposé" />
+      </Bloc>
+      <Note couleur={couleur}>Les limites de secteur admettent une tolérance de ± 5°. En entrée parallèle, le virage se fait du côté non protégé : c'est le seul moment où l'on sort volontairement du côté de l'hippodrome.</Note>
+    </div>
+  );
+}
+
+const FAMILLES = {
+  distance:  { l:"Distance", u:{ "NM":1852, "km":1000, "m":1, "ft":0.3048, "SM":1609.344 } },
+  vitesse:   { l:"Vitesse",  u:{ "kt":0.514444, "km/h":0.2777778, "m/s":1, "mph":0.44704, "ft/min":0.00508 } },
+  altitude:  { l:"Altitude", u:{ "ft":0.3048, "m":1, "FL":30.48 } },
+  pression:  { l:"Pression", u:{ "hPa":1, "in.Hg":33.86389, "mmHg":1.333224, "psi":68.94757 } },
+  volume:    { l:"Volume",   u:{ "L":1, "US gal":3.785412, "imp gal":4.546092 } },
+  masse:     { l:"Masse",    u:{ "kg":1, "lb":0.4535924 } },
+};
+
+function OutilConversions({ couleur }) {
+  const [fam, setFam] = useEtat("conv-fam", "distance");
+  const [uni, setUni] = useEtat("conv-uni", "NM");
+  const [val, setVal] = useEtat("conv-val", "10");
+  const [tc, setTc]   = useEtat("conv-tc", "15");
+  const [litres, setLitres] = useEtat("conv-l", "100");
+
+  const v = num(val);
+  const f = FAMILLES[fam] || FAMILLES.distance;
+  const unites = Object.keys(f.u);
+  const source = f.u[uni] ? uni : unites[0];
+  const base = ok(v) ? v * f.u[source] : null;
+  const t = num(tc), L = num(litres);
+
+  function changerFamille(k) {
+    setFam(k);
+    setUni(Object.keys(FAMILLES[k].u)[0]);
+  }
+
+  return (
+    <div>
+      <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:4,marginBottom:10}}>
+        {Object.entries(FAMILLES).map(([k, ff]) => (
+          <button key={k} onClick={() => changerFamille(k)} style={{padding:"6px 12px",borderRadius:20,border:"none",flexShrink:0,
+            background:fam === k ? couleur : "#F1F5F9",color:fam === k ? "white" : "#64748B",fontSize:11,fontWeight:700,cursor:"pointer"}}>{ff.l}</button>
+        ))}
+      </div>
+      <Grille><Champ label="Valeur" valeur={val} onChange={setVal} unite={source} large /></Grille>
+      <Choix options={unites.map(u => ({ v:u, l:u }))} valeur={source} onChange={setUni} couleur={couleur} />
+      <Bloc>
+        {unites.filter(u => u !== source).map(u => (
+          <Res key={u} label={u} valeur={ok(base) ? fmt(base / f.u[u], base / f.u[u] < 10 ? 3 : base / f.u[u] < 1000 ? 2 : 0) : "—"} unite="" couleur={couleur} />
+        ))}
+      </Bloc>
+      <Bloc titre="Température">
+        <div style={{padding:"3px 9px 0"}}><Champ label="Température" valeur={tc} onChange={setTc} unite="°C" /></div>
+        <Res label="Degrés Fahrenheit" valeur={ok(t) ? fmt(t * 1.8 + 32, 1) : "—"} unite="°F" couleur={couleur} />
+        <Res label="Kelvin" valeur={ok(t) ? fmt(t + 273.15, 1) : "—"} unite="K" couleur={couleur} />
+      </Bloc>
+      <Bloc titre="Carburant">
+        <div style={{padding:"3px 9px 0"}}><Champ label="Volume" valeur={litres} onChange={setLitres} unite="L" /></div>
+        <Res label="US gallons" valeur={ok(L) ? fmt(L / 3.785412, 1) : "—"} unite="gal" couleur={couleur} />
+        <Res label="AVGAS 100LL" valeur={ok(L) ? fmt(L * 0.72, 1) : "—"} unite="kg" note={ok(L) ? `${fmt(L * 0.72 / 0.4535924, 1)} lb · densité 0,72` : null} couleur={couleur} />
+        <Res label="Jet A-1" valeur={ok(L) ? fmt(L * 0.80, 1) : "—"} unite="kg" note={ok(L) ? `${fmt(L * 0.80 / 0.4535924, 1)} lb · densité 0,80` : null} couleur={couleur} />
+      </Bloc>
+      <Note couleur={couleur}>Les densités du carburant varient avec la température ; 0,72 et 0,80 sont les valeurs conventionnelles des devis de masse. Le FL est ici traité comme une altitude pression en centaines de pieds.</Note>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Décodage des METAR ──────────────────────────
+   Analyse groupe par groupe, sans table de messages préenregistrés : tout ce
+   qui n'est pas reconnu est signalé plutôt que passé sous silence. */
+
+const TEMPS_INTENSITE = { "-":"faible", "+":"forte", "VC":"à proximité" };
+const TEMPS_DESC = { MI:"mince", BC:"en bancs", PR:"partiel", DR:"chasse basse", BL:"chasse élevée",
+                     SH:"averse de", TS:"orage", FZ:"se congelant" };
+const TEMPS_PHENO = { DZ:"bruine", RA:"pluie", SN:"neige", SG:"neige en grains", IC:"cristaux de glace",
+                      PL:"granules de glace", GR:"grêle", GS:"grésil", UP:"précipitation inconnue",
+                      BR:"brume", FG:"brouillard", FU:"fumée", VA:"cendres volcaniques", DU:"poussière",
+                      SA:"sable", HZ:"brume sèche", PY:"embruns", PO:"tourbillons de poussière",
+                      SQ:"grain", FC:"trombe", SS:"tempête de sable", DS:"tempête de poussière" };
+const NEBULOSITE = { FEW:"1 à 2 octas", SCT:"3 à 4 octas", BKN:"5 à 7 octas", OVC:"8 octas" };
+
+function decodeTemps(g) {
+  let s = g, txt = [];
+  if (s.startsWith("VC")) { txt.push("à proximité"); s = s.slice(2); }
+  else if (s[0] === "-" || s[0] === "+") { txt.push(TEMPS_INTENSITE[s[0]]); s = s.slice(1); }
+  const morceaux = [];
+  while (s.length >= 2) {
+    const p = s.slice(0, 2);
+    if (TEMPS_DESC[p]) morceaux.push(TEMPS_DESC[p]);
+    else if (TEMPS_PHENO[p]) morceaux.push(TEMPS_PHENO[p]);
+    else return null;
+    s = s.slice(2);
+  }
+  if (!morceaux.length) return null;
+  return [...morceaux, ...txt].join(" ");
+}
+
+function decodeMetar(brut) {
+  const t = brut.toUpperCase().replace(/=/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  const g = t.split(" ");
+  const lignes = [], inconnus = [];
+  let temp = null, rosee = null, qnh = null, i = 0, tendance = null;
+
+  if (["METAR", "SPECI", "TAF"].includes(g[i])) { lignes.push(["Type", g[i] === "SPECI" ? "SPECI — message spécial hors échéance" : g[i]]); i++; }
+  if (["COR", "AMD", "RTD"].includes(g[i])) { lignes.push(["Statut", g[i] === "COR" ? "corrigé" : g[i] === "AMD" ? "amendé" : "retardé"]); i++; }
+  if (/^[A-Z]{4}$/.test(g[i] || "")) { lignes.push(["Station", g[i]]); i++; }
+  if (/^\d{6}Z$/.test(g[i] || "")) {
+    const v = g[i]; lignes.push(["Observation", `le ${v.slice(0,2)} à ${v.slice(2,4)} h ${v.slice(4,6)} UTC`]); i++;
+  }
+
+  for (; i < g.length; i++) {
+    const x = g[i];
+    if (tendance) { tendance.push(x); continue; }
+    let m;
+
+    if (x === "AUTO") { lignes.push(["Automatique", "observation sans intervention humaine"]); continue; }
+    if (x === "NIL")  { lignes.push(["Message", "absent"]); continue; }
+    if (x === "CAVOK") { lignes.push(["CAVOK", "visibilité ≥ 10 km, aucun nuage sous 5000 ft ni cumulonimbus, aucun phénomène significatif"]); continue; }
+    if (x === "NOSIG") { lignes.push(["Tendance", "aucun changement significatif attendu dans les 2 h"]); continue; }
+    if (["TEMPO", "BECMG", "PROB30", "PROB40"].includes(x)) { tendance = [x]; continue; }
+    if (x === "RMK") { tendance = [x]; continue; }
+
+    if ((m = x.match(/^(\d{3}|VRB)(\d{2,3})(G(\d{2,3}))?(KT|MPS|KMH)$/))) {
+      const f = +m[2], u = m[5] === "KT" ? "kt" : m[5] === "MPS" ? "m/s" : "km/h";
+      let s = m[1] === "VRB" ? `variable, ${f} ${u}` : `du ${m[1]}° pour ${f} ${u}`;
+      if (m[4]) s += `, rafales à ${+m[4]} ${u}`;
+      if (f === 0) s = "calme";
+      lignes.push(["Vent", s]); continue;
+    }
+    if ((m = x.match(/^(\d{3})V(\d{3})$/))) { lignes.push(["Direction variable", `entre ${m[1]}° et ${m[2]}°`]); continue; }
+    if ((m = x.match(/^(\d{4})(NDV|[NSEW]{1,2})?$/))) {
+      const v = +m[1];
+      lignes.push(["Visibilité", v === 9999 ? "10 km ou plus" : v === 0 ? "moins de 50 m" : `${fmt(v)} m${m[2] && m[2] !== "NDV" ? ` vers le ${m[2]}` : ""}`]);
+      continue;
+    }
+    if ((m = x.match(/^(\d{1,2})SM$/)) || (m = x.match(/^M?(\d\/\d)SM$/))) { lignes.push(["Visibilité", `${m[1]} milles terrestres`]); continue; }
+    if ((m = x.match(/^R(\d{2}[LCR]?)\/([PM]?)(\d{4})(V([PM]?)(\d{4}))?(FT)?\/?([UDN])?$/))) {
+      const u = m[7] ? "ft" : "m";
+      let s = `${m[2] === "P" ? "plus de " : m[2] === "M" ? "moins de " : ""}${fmt(+m[3])} ${u}`;
+      if (m[6]) s += ` variable jusqu'à ${fmt(+m[6])} ${u}`;
+      if (m[8]) s += m[8] === "U" ? ", en amélioration" : m[8] === "D" ? ", en dégradation" : ", stable";
+      lignes.push([`RVR piste ${m[1]}`, s]); continue;
+    }
+    if ((m = x.match(/^(VV|FEW|SCT|BKN|OVC)(\d{3}|\/{3})(CB|TCU)?$/))) {
+      const h = m[2] === "///" ? null : +m[2] * 100;
+      if (m[1] === "VV") { lignes.push(["Visibilité verticale", h === null ? "non mesurée" : `${fmt(h)} ft`]); continue; }
+      lignes.push(["Nuages", `${NEBULOSITE[m[1]]} à ${h === null ? "hauteur non mesurée" : fmt(h) + " ft"}${m[3] === "CB" ? ", cumulonimbus" : m[3] === "TCU" ? ", cumulus bourgeonnant" : ""}`]);
+      continue;
+    }
+    if (["NSC", "NCD", "SKC", "CLR"].includes(x)) {
+      lignes.push(["Nuages", x === "NCD" ? "aucun détecté par le capteur" : x === "NSC" ? "aucun nuage significatif" : "ciel clair"]); continue;
+    }
+    if ((m = x.match(/^(M?)(\d{2})\/(M?)(\d{2})$/))) {
+      temp = (m[1] ? -1 : 1) * +m[2]; rosee = (m[3] ? -1 : 1) * +m[4];
+      lignes.push(["Température", `${temp} °C, point de rosée ${rosee} °C`]); continue;
+    }
+    if ((m = x.match(/^Q(\d{4})$/))) { qnh = +m[1]; lignes.push(["QNH", `${qnh} hPa (${fmt(qnh / 33.86389, 2)} in.Hg)`]); continue; }
+    if ((m = x.match(/^A(\d{4})$/))) { qnh = +m[1] / 100 * 33.86389; lignes.push(["QNH", `${fmt(+m[1] / 100, 2)} in.Hg (${fmt(qnh)} hPa)`]); continue; }
+    if ((m = x.match(/^RE(.+)$/))) { const d = decodeTemps(m[1]); lignes.push(["Phénomène récent", d || m[1]]); continue; }
+    if (x === "WS") {
+      const suite = g[i + 1] || "";
+      if (suite === "ALL" && /^RWYS?$/.test(g[i + 2] || "")) { lignes.push(["Cisaillement", "sur toutes les pistes"]); i += 2; }
+      else if (suite === "ALL") { lignes.push(["Cisaillement", "sur toutes les pistes"]); i++; }
+      else if (/^R(WY)?\d{2}[LCR]?$/.test(suite)) { lignes.push(["Cisaillement", `piste ${suite.replace(/^R(WY)?/, "")}`]); i++; }
+      else lignes.push(["Cisaillement", "signalé"]);
+      continue;
+    }
+    if ((m = x.match(/^(\d{2})\/{4}$/))) { lignes.push(["État de piste", `piste ${m[1]}, information non disponible`]); continue; }
+    const d = decodeTemps(x);
+    if (d) { lignes.push(["Temps présent", d]); continue; }
+    inconnus.push(x);
+  }
+
+  if (tendance && tendance.length) lignes.push([tendance[0] === "RMK" ? "Remarques" : "Évolution", tendance.join(" ")]);
+
+  const calcules = [];
+  if (temp !== null && rosee !== null) {
+    const es = 6.112 * Math.exp(17.67 * temp / (temp + 243.5));
+    const e  = 6.112 * Math.exp(17.67 * rosee / (rosee + 243.5));
+    calcules.push(["Humidité relative", `${fmt(100 * e / es)} %`]);
+    calcules.push(["Base des nuages convectifs", `≈ ${fmt(Math.max(0, (temp - rosee)) * 400)} ft au-dessus du terrain`]);
+    calcules.push(["Écart au point de rosée", `${fmt(temp - rosee)} °C${temp - rosee <= 3 ? " — brume ou brouillard possible" : ""}`]);
+  }
+  if (qnh !== null) calcules.push(["Écart au calage standard", `${fmt(1013.25 - qnh)} hPa, soit ${fmt((1013.25 - qnh) * 27)} ft`]);
+
+  return { lignes, calcules, inconnus };
+}
+
+function OutilMetar({ couleur }) {
+  const [txt, setTxt] = useEtat("metar-txt", "LFPG 221130Z AUTO 24012G22KT 210V270 3000 -RA BR BKN008 OVC015 09/08 Q1004 TEMPO 1500 RADZ BKN004");
+  const res = useMemo(() => decodeMetar(txt), [txt]);
+
+  return (
+    <div>
+      <div style={{fontSize:9,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.8,marginBottom:4}}>Message brut</div>
+      <textarea value={txt} onChange={e => setTxt(e.target.value)} rows={4} spellCheck={false}
+        style={{width:"100%",padding:"10px 11px",borderRadius:11,border:"1px solid #E2E8F0",background:"#F8FAFC",
+                fontSize:13,fontWeight:600,color:"#0F172A",outline:"none",resize:"vertical",
+                fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",lineHeight:1.5}} />
+      {res && res.lignes.length > 0 && (
+        <Bloc titre="Décodage">
+          {res.lignes.map(([k, v], n) => (
+            <div key={n} style={{padding:"7px 12px",borderBottom:n < res.lignes.length - 1 ? "1px solid #F1F5F9" : "none"}}>
+              <div style={{fontSize:9,fontWeight:800,color:couleur,textTransform:"uppercase",letterSpacing:.7}}>{k}</div>
+              <div style={{fontSize:12,color:"#0F172A",fontWeight:600,lineHeight:1.45,marginTop:2}}>{v}</div>
+            </div>
+          ))}
+        </Bloc>
+      )}
+      {res && res.calcules.length > 0 && (
+        <Bloc titre="Déduit du message">
+          {res.calcules.map(([k, v], n) => <Res key={n} label={k} valeur={v} unite="" couleur={couleur} />)}
+        </Bloc>
+      )}
+      {res && res.inconnus.length > 0 && (
+        <Note couleur="#EF4444">Groupes non reconnus : {res.inconnus.join(" ")}</Note>
+      )}
+      <Note couleur={couleur}>Le décodage est fait localement, sans réseau : rien n'est envoyé nulle part et l'outil fonctionne en vol. Il ne remplace pas la lecture du message d'origine, qui reste la référence.</Note>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Assemblage de la page ──────────────────────── */
+
+const OUTILS = [
+  { id:"descente",    nom:"Descente",     emoji:"🛬", desc:"TOD, taux, plan",        couleur:"#4F8EF7", C:OutilDescente },
+  { id:"montee",      nom:"Montée",       emoji:"🛫", desc:"gradient et taux",       couleur:"#0EA5E9", C:OutilMontee },
+  { id:"vent",        nom:"Vent",         emoji:"🌬", desc:"dérive, cap, GS",        couleur:"#10B981", C:OutilVent },
+  { id:"virage",      nom:"Virage",       emoji:"↻",  desc:"rayon, inclinaison",     couleur:"#8B5CF6", C:OutilVirage },
+  { id:"altimetrie",  nom:"Altimétrie",   emoji:"🌡", desc:"Zp, Zd, temps froid",    couleur:"#F59E0B", C:OutilAltimetrie },
+  { id:"vitesses",    nom:"Vitesses",     emoji:"💨", desc:"CAS, TAS, Mach",         couleur:"#06B6D4", C:OutilVitesses },
+  { id:"navigation",  nom:"Nav & fuel",   emoji:"⏱",  desc:"temps et carburant",     couleur:"#EC4899", C:OutilNavigation },
+  { id:"petpnr",      nom:"PET / PNR",    emoji:"🔁", desc:"égal temps, non-retour", couleur:"#F97316", C:OutilPetPnr },
+  { id:"attente",     nom:"Attente",      emoji:"🎯", desc:"secteur d'entrée",       couleur:"#6366F1", C:OutilAttente },
+  { id:"conversions", nom:"Conversions",  emoji:"📏", desc:"unités et carburant",    couleur:"#64748B", C:OutilConversions },
+  { id:"metar",       nom:"METAR",        emoji:"📄", desc:"décodage hors ligne",    couleur:"#14B8A6", C:OutilMetar },
+];
+
+function NavPills({ current }) {
+  const pages = [
+    { key:"ifr",    href:"ifr.html",    label:"Fiches" },
+    { key:"pilote", href:"pilote.html", label:"Outils" },
+  ];
+  return (
+    <div style={{display:"flex",gap:5}}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [ouvert, setOuvert] = useEtat("outil-ouvert", null);
+  const outil = OUTILS.find(o => o.id === ouvert);
+
+  useEffect(() => { window.scrollTo(0, 0); }, [ouvert]);
+
+  return (
+    <div style={{minHeight:"100vh",background:"#E8EDF5",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:430,minHeight:"100vh",background:"#fff",display:"flex",flexDirection:"column"}}>
+        <div style={{background:"#0F172A",paddingTop:"env(safe-area-inset-top, 0px)"}}>
+          {!IS_APP && (
+            <div style={{padding:"14px 20px 10px",display:"flex",justifyContent:"space-between",fontSize:12,color:"white",fontWeight:600}}>
+              <span>9:41</span><span style={{fontSize:15,letterSpacing:-1}}>●●●</span><span>🔋</span>
+            </div>
+          )}
+        </div>
+        <div style={{background:outil ? `linear-gradient(135deg,#0F172A 0%,${outil.couleur}44 100%)` : "linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)",padding:"18px 18px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:9,color:"#93C5FD",letterSpacing:2,marginBottom:3,textTransform:"uppercase"}}>
+                {outil ? outil.desc : "Boîte à outils"}
+              </div>
+              <h1 style={{margin:0,fontSize:22,fontWeight:800,color:"white",lineHeight:1.1}}>
+                {outil ? `${outil.emoji} ${outil.nom}` : "Outils pilote"}
+              </h1>
+              <div style={{fontSize:10,color:"rgba(255,255,255,.5)",marginTop:2}}>{outil ? "Calcul instantané, hors ligne" : `${OUTILS.length} calculateurs, sans réseau`}</div>
+            </div>
+            <NavPills current="pilote" />
+          </div>
+        </div>
+        <div style={{flex:1,padding:"14px 14px calc(40px + env(safe-area-inset-bottom, 0px))"}}>
+          {outil ? (
+            <div>
+              <button onClick={() => setOuvert(null)} style={{background:"#F1F5F9",border:"none",borderRadius:10,padding:"8px 13px",
+                color:"#475569",fontSize:11,fontWeight:800,cursor:"pointer",marginBottom:13}}>← Tous les outils</button>
+              <outil.C couleur={outil.couleur} />
+            </div>
+          ) : (
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
+              {OUTILS.map(o => (
+                <button key={o.id} onClick={() => setOuvert(o.id)} style={{background:"#F8FAFC",border:`1px solid ${o.couleur}33`,
+                  borderRadius:14,padding:"14px 12px",textAlign:"left",cursor:"pointer"}}>
+                  <div style={{width:34,height:34,borderRadius:10,background:o.couleur + "1F",display:"flex",alignItems:"center",
+                    justifyContent:"center",fontSize:17,marginBottom:8}}>{o.emoji}</div>
+                  <div style={{fontSize:13,fontWeight:800,color:"#0F172A"}}>{o.nom}</div>
+                  <div style={{fontSize:10,color:"#94A3B8",marginTop:2,lineHeight:1.35}}>{o.desc}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

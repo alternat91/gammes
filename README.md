@@ -1,7 +1,10 @@
 # Gammes
 
-Trois outils de travail pour musiciens, en pages HTML autonomes (React via CDN, aucune installation).
-Chaque page a un bouton de navigation vers les deux autres, accessible à tout moment.
+Cinq outils de travail en pages HTML autonomes (React via CDN, aucune installation) : trois pour
+les musiciens, deux pour les pilotes. Les pages d'une même famille se renvoient les unes aux
+autres par un bouton de navigation accessible à tout moment.
+
+### Musique
 
 | Page | Contenu |
 | --- | --- |
@@ -9,18 +12,26 @@ Chaque page a un bouton de navigation vers les deux autres, accessible à tout m
 | [`accords.html`](accords.html) | Générateur d'accords de guitare : les positions jouables sont **calculées**, pas listées dans un dictionnaire. |
 | [`progressions.html`](progressions.html) | Doigtés pour des suites d'accords typiques (2‑5‑1, 1‑6‑4‑5, cadence andalouse, blues 12 mesures…), dans n'importe quelle tonalité. |
 
+### Vol aux instruments
+
+| Page | Contenu |
+| --- | --- |
+| [`ifr.html`](ifr.html) | Révision IFR : 41 fiches de calculs et de formules, plus un quiz qui tire des questions chiffrées au hasard et corrige pas à pas. |
+| [`pilote.html`](pilote.html) | Boîte à outils du pilote : 11 calculateurs de vol, du début de descente au décodage d'un METAR, tous utilisables hors réseau. |
+
 ## Installation sur iPhone / Android
 
-Les trois pages sont des applications installables (PWA). Sur iPhone : ouvre la page dans
+Les cinq pages sont des applications installables (PWA). Sur iPhone : ouvre la page dans
 **Safari** → bouton Partager → **Sur l'écran d'accueil**. L'application s'ouvre alors en plein
 écran, sans l'interface de Safari, avec sa propre icône, et **fonctionne sans réseau** une fois
 lancée une première fois.
 
 Chaque page s'installe séparément, avec sa propre icône : `index.html` donne « Gammes » (clavier),
 `accords.html` donne « Accords » (grille d'accords), `progressions.html` donne « Suites » (grilles
-chaînées par une flèche).
+chaînées par une flèche), `ifr.html` donne « IFR » (horizon artificiel) et `pilote.html` donne
+« Outils » (règle à calcul circulaire).
 
-Le service worker (`sw.js`) met en cache les trois pages, les icônes et les librairies React au
+Le service worker (`sw.js`) met en cache les cinq pages, les icônes et les librairies React au
 premier chargement, puis sert tout depuis le cache en le rafraîchissant en arrière-plan. Pour
 publier une nouvelle version, incrémente `VERSION` dans `sw.js` : l'ancien cache est supprimé au
 prochain lancement.
@@ -78,3 +89,45 @@ reste active si tu changes de tonalité, d'accordage ou de zone du manche, et ne
 si tu choisis une autre suite. Les accords diminués et demi-diminués (ii° d'un turnaround mineur,
 par exemple) n'affichent aucune substitution : leur reharmonisation dépend trop du contexte pour
 une règle générique fiable.
+
+## Révision IFR
+
+L'onglet **Fiches** regroupe 41 formules par thème — descente, virages, vent et navigation,
+altimétrie, temps et carburant, procédures. Chaque fiche donne la formule exacte, la règle de
+calcul mental correspondante, une explication de ce qu'elle recouvre et un exemple chiffré. Une
+recherche plein texte permet de retrouver une formule sans passer par les thèmes.
+
+L'onglet **Quiz** tire des questions au hasard dans les thèmes sélectionnés : 29 générateurs
+numériques (taux de descente, dérive, altitude densité, TAS, PET…) et 7 questions à choix
+multiples sur la réglementation. Chaque question est validée avec une tolérance affichée, puis
+corrigée étape par étape. La série en cours et le meilleur score sont conservés d'une session à
+l'autre.
+
+Les exemples des fiches et les réponses du quiz **sont calculés par les mêmes fonctions**, jamais
+recopiés : un exemple ne peut pas contredire la formule qu'il illustre. Les fonctions de calcul
+sont partagées mot pour mot avec la boîte à outils.
+
+## Boîte à outils pilote
+
+Onze calculateurs, chacun avec ses résultats recalculés à la frappe :
+
+| Outil | Ce qu'il donne |
+| --- | --- |
+| Descente | Début de descente, taux, gradient, durée, et la table altitude/distance du plan |
+| Montée | Taux minimum pour un gradient publié, gradient réellement obtenu, altitude gagnée |
+| Vent | Dérive, cap à tenir, vitesse sol et composantes, avec une rose du vent dessinée |
+| Virage | Inclinaison, rayon, taux, durée et anticipation du point de virage |
+| Altimétrie | Altitude pression et densité, déviation ISA, QFE, correction par temps froid (PANS-OPS) |
+| Vitesses | TAS, Mach et EAS par le calcul compressible exact, comparés à la règle des 2 % |
+| Nav & fuel | Durée d'étape et bilan carburant complet, imprévus et réserve finale compris |
+| PET / PNR | Point d'égal temps et point de non-retour, en distance et en temps |
+| Attente | Secteur d'entrée avec schéma, vitesses maximales, chronométrage, triple dérive |
+| Conversions | Distances, vitesses, altitudes, pressions, volumes, masses, températures, carburant |
+| METAR | Décodage complet d'un message, plus humidité, base des nuages et écart au calage standard |
+
+Les valeurs saisies sont conservées d'une ouverture à l'autre : en vol, on rouvre un outil pour
+ajuster un chiffre, pas pour tout ressaisir. Le décodage METAR est fait localement — rien n'est
+envoyé nulle part, et l'outil reste utilisable sans réseau.
+
+Ces deux applications sont des aides à la révision et au calcul mental : elles ne remplacent ni la
+documentation officielle, ni les cartes, ni le manuel de vol.

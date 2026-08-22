@@ -1,0 +1,20 @@
+{
+  "name": "Révision IFR",
+  "short_name": "IFR",
+  "description": "Fiches de calculs et de formules IFR, avec entraînement au calcul mental.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "ifr.html",
+  "scope": "./",
+  "id": "/gammes/ifr",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "categories": ["education", "travel", "utilities"],
+  "icons": [
+    { "src": "icons/ifr-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/ifr-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/ifr-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
