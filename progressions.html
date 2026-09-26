@@ -471,9 +471,10 @@ function NavPills({ current }) {
     { key:"gammes",       href:"index.html",       label:"Gammes" },
     { key:"accords",      href:"accords.html",     label:"Accords" },
     { key:"progressions", href:"progressions.html", label:"Suites" },
+    { key:"a320",         href:"a320.html",         label:"A320" },
   ];
   return (
-    <div style={{display:"flex",gap:5}}>
+    <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>
       {pages.map(p => p.key === current
         ? <div key={p.key} style={{background:"rgba(255,255,255,.06)",borderRadius:10,padding:"9px 9px",color:"rgba(255,255,255,.45)",fontSize:10,fontWeight:800,letterSpacing:.5}}>{p.label}</div>
         : <a key={p.key} href={p.href} style={{background:"rgba(255,255,255,.1)",borderRadius:10,padding:"9px 9px",color:"white",fontSize:10,fontWeight:800,textDecoration:"none",lineHeight:1,letterSpacing:.5}}>{p.label}</a>

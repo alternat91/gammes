@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Formules A320" />
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="description" content="Révision des formules de calcul mental utiles en ligne : descente, vent, carburant, virages, altimétrie." />
+  <link rel="manifest" href="a320.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/a320-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/a320-192.png" />
+  <title>Formules A320</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #E8EDF5; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; overscroll-behavior: none; }
+    ::-webkit-scrollbar { display: none; }
+    button { -webkit-appearance: none; font-family: inherit; }
+  </style>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+const IS_APP = typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true);
+
+function round(n, d = 0) { const p = Math.pow(10, d); return Math.round(n * p) / p; }
+function ri(min, max, step = 1) { const n = Math.floor(Math.random() * ((max - min) / step + 1)); return min + n * step; }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// ---- Base de formules -------------------------------------------------
+// Chaque formule : id, catégorie, titre, formule affichée, explication,
+// un exemple fixe (pour la lecture), et un générateur quiz() optionnel
+// qui tire un scénario aléatoire à calculer de tête.
+
+const CATEGORIES = {
+  descente: { label: "Descente", color: "#4F8EF7" },
+  vtd:      { label: "Vitesse · temps · distance", color: "#10B981" },
+  carburant:{ label: "Carburant", color: "#F59E0B" },
+  vent:     { label: "Vent & dérive", color: "#06B6D4" },
+  altimetrie:{ label: "Altimétrie", color: "#8B5CF6" },
+  virages:  { label: "Virages & attente", color: "#EC4899" },
+  approche: { label: "Approche", color: "#EF4444" },
+};
+
+const FORMULAS = [
+  {
+    id: "tod",
+    cat: "descente",
+    title: "Distance du top de descente",
+    formula: "Distance (nm) = Alt. à perdre (milliers de ft) × 3",
+    note: "Donne le point où amorcer la descente pour rejoindre une altitude cible sur un plan à 3°. Règle de base de toute préparation de descente.",
+    example: "FL350 vers 4000 ft → à perdre 31 000 ft → 31 × 3 = 93 nm avant le point cible.",
+    quiz: () => {
+      const fl = ri(280, 390, 10);
+      const target = ri(0, 60, 10);
+      const toLose = fl * 100 - target * 100;
+      const dist = round(toLose / 1000 * 3);
+      return {
+        prompt: `Croisière FL${fl}, altitude cible ${target * 100} ft. À quelle distance (nm) du point cible faut-il débuter la descente (plan 3°) ?`,
+        steps: [
+          `Alt. à perdre = ${fl * 100} − ${target * 100} = ${toLose} ft`,
+          `${toLose} ft = ${round(toLose / 1000, 1)} milliers de ft`,
+          `Distance = ${round(toLose / 1000, 1)} × 3 = ${dist} nm`,
+        ],
+        answer: dist, unit: "nm",
+      };
+    },
+  },
+  {
+    id: "tod-vent",
+    cat: "descente",
+    title: "Correction du TOD pour le vent",
+    formula: "±1 nm par tranche de 10 kt de vent (composante route)",
+    note: "Vent arrière en croisière/descente : reculer le point de descente (descendre plus tôt). Vent de face : l'avancer (descendre plus tard).",
+    example: "TOD à 90 nm, vent arrière de 40 kt en route → 90 + 4 = 94 nm avant le point cible.",
+    quiz: () => {
+      const base = ri(60, 120, 5);
+      const wind = pick([-50, -40, -30, -20, 20, 30, 40, 50]);
+      const corr = round(wind / 10);
+      const total = round(base + corr);
+      return {
+        prompt: `TOD calculé à ${base} nm (sans vent). Composante de vent en route : ${wind > 0 ? "arrière " : "de face "}${Math.abs(wind)} kt. Distance corrigée ?`,
+        steps: [
+          `Correction = ${wind} / 10 = ${corr > 0 ? "+" : ""}${corr} nm`,
+          `${base} ${corr >= 0 ? "+" : "−"} ${Math.abs(corr)} = ${total} nm`,
+        ],
+        answer: total, unit: "nm",
+      };
+    },
+  },
+  {
+    id: "vs3",
+    cat: "descente",
+    title: "Taux de descente pour un plan à 3°",
+    formula: "V/S (ft/min) = GS (kt) × 5",
+    note: "Moyen mnémotechnique le plus utilisé en ligne pour tenir un plan de descente standard à 3° (identique à l'ILS).",
+    example: "GS 240 kt → V/S = 240 × 5 = 1200 ft/min.",
+    quiz: () => {
+      const gs = ri(140, 320, 10);
+      const vs = gs * 5;
+      return {
+        prompt: `Vitesse sol ${gs} kt. Quel taux de descente (ft/min) tient un plan à 3° ?`,
+        steps: [`V/S = ${gs} × 5 = ${vs} ft/min`],
+        answer: vs, unit: "ft/min",
+      };
+    },
+  },
+  {
+    id: "vs-angle",
+    cat: "descente",
+    title: "Taux de descente pour un autre angle",
+    formula: "V/S (ft/min) ≈ GS × 5 × (angle / 3)",
+    note: "On part de la règle des 3° (×5) et on l'échelle au prorata de l'angle voulu — utile pour un plan RNP plus pentu (3,3°, 3,5°…).",
+    example: "GS 150 kt, plan à 3,5° → 150 × 5 × (3,5/3) ≈ 875 ft/min.",
+    quiz: () => {
+      const gs = ri(120, 180, 5);
+      const angle = pick([3.3, 3.5, 4]);
+      const vs = round(gs * 5 * (angle / 3));
+      return {
+        prompt: `Vitesse sol ${gs} kt, plan à ${angle}°. Taux de descente approximatif ?`,
+        steps: [
+          `V/S = ${gs} × 5 × (${angle}/3)`,
+          `≈ ${gs * 5} × ${round(angle / 3, 2)} ≈ ${vs} ft/min`,
+        ],
+        answer: vs, unit: "ft/min", tolerance: 15,
+      };
+    },
+  },
+  {
+    id: "anticipation",
+    cat: "descente",
+    title: "Anticipation de mise en palier",
+    formula: "Anticipation (ft) = |V/S (ft/min)| × 10%",
+    note: "Repère pour amorcer l'arrondi vertical avant d'atteindre l'altitude sélectionnée, en descente comme en montée.",
+    example: "V/S −1800 ft/min → commencer le palier 180 ft avant l'altitude cible.",
+    quiz: () => {
+      const vs = ri(800, 2400, 100);
+      const ant = round(vs * 0.1);
+      return {
+        prompt: `Taux vertical de ${vs} ft/min. À combien de pieds de l'altitude cible faut-il commencer le palier ?`,
+        steps: [`Anticipation = ${vs} × 10% = ${ant} ft`],
+        answer: ant, unit: "ft",
+      };
+    },
+  },
+  {
+    id: "tps-distance",
+    cat: "vtd",
+    title: "Temps pour parcourir une distance",
+    formula: "Temps (min) = Distance (nm) / GS (kt) × 60",
+    note: "Calcul de base pour une ETA rapide entre deux points.",
+    example: "120 nm à GS 400 kt → 120/400×60 = 18 min.",
+    quiz: () => {
+      const gs = ri(250, 480, 10);
+      const dist = ri(40, 300, 10);
+      const t = round(dist / gs * 60);
+      return {
+        prompt: `Distance ${dist} nm, GS ${gs} kt. Temps de vol (min) ?`,
+        steps: [`Temps = ${dist} / ${gs} × 60 ≈ ${t} min`],
+        answer: t, unit: "min", tolerance: 1,
+      };
+    },
+  },
+  {
+    id: "nm-min",
+    cat: "vtd",
+    title: "Nm parcourus par minute",
+    formula: "nm/min = GS (kt) / 60",
+    note: "Raccourci pratique pour estimer une position ou une ETA sans poser de division complète.",
+    example: "GS 480 kt → 8 nm par minute.",
+    quiz: () => {
+      const gs = ri(240, 540, 60);
+      const v = round(gs / 60, 1);
+      return {
+        prompt: `GS ${gs} kt. Combien de nm parcourus par minute ?`,
+        steps: [`${gs} / 60 = ${v} nm/min`],
+        answer: v, unit: "nm/min", tolerance: 0.2,
+      };
+    },
+  },
+  {
+    id: "regle-60",
+    cat: "vtd",
+    title: "Règle des 60 (écart de route)",
+    formula: "Écart (nm) = Distance parcourue (nm) × Erreur de cap (°) / 60",
+    note: "Utile pour estimer l'écart latéral induit par une erreur de cap ou de dérive non corrigée.",
+    example: "Erreur de cap de 3° sur 120 nm → 120 × 3/60 = 6 nm d'écart.",
+    quiz: () => {
+      const dist = ri(60, 240, 10);
+      const err = ri(2, 8, 1);
+      const dev = round(dist * err / 60, 1);
+      return {
+        prompt: `Erreur de cap de ${err}° maintenue sur ${dist} nm. Écart latéral induit ?`,
+        steps: [`Écart = ${dist} × ${err} / 60 ≈ ${dev} nm`],
+        answer: dev, unit: "nm", tolerance: 0.5,
+      };
+    },
+  },
+  {
+    id: "endurance",
+    cat: "carburant",
+    title: "Endurance carburant",
+    formula: "Endurance (h) = Fuel à bord (kg) / Fuel Flow (kg/h)",
+    note: "Contrôle grossier du temps de vol restant à partir du fuel flow total affiché au FMS/ECAM.",
+    example: "6000 kg à bord, fuel flow 2000 kg/h → endurance 3h.",
+    quiz: () => {
+      const ff = ri(1600, 2400, 100);
+      const hEnd = ri(2, 5, 1) + pick([0, 0.5]);
+      const fob = round(ff * hEnd);
+      return {
+        prompt: `Fuel à bord ${fob} kg, fuel flow total ${ff} kg/h. Endurance restante ?`,
+        steps: [`Endurance = ${fob} / ${ff} ≈ ${hEnd} h`],
+        answer: hEnd, unit: "h", tolerance: 0.15,
+      };
+    },
+  },
+  {
+    id: "distance-franchissable",
+    cat: "carburant",
+    title: "Distance franchissable",
+    formula: "Distance (nm) = Endurance (h) × GS (kt)",
+    note: "Combine l'endurance carburant et la vitesse sol pour vérifier la faisabilité d'un déroutement.",
+    example: "Endurance 2 h, GS 420 kt → 840 nm franchissables.",
+    quiz: () => {
+      const gs = ri(300, 460, 20);
+      const end = pick([1, 1.5, 2, 2.5, 3]);
+      const d = round(gs * end);
+      return {
+        prompt: `Endurance restante ${end} h, GS ${gs} kt. Distance franchissable ?`,
+        steps: [`Distance = ${end} × ${gs} = ${d} nm`],
+        answer: d, unit: "nm",
+      };
+    },
+  },
+  {
+    id: "contingence",
+    cat: "carburant",
+    title: "Fuel de contingence route",
+    formula: "Contingence = 5 % du Trip Fuel",
+    note: "Valeur réglementaire standard couvrant les aléas de route (vent, niveau, routing) ; comparer à la valeur du plan de vol.",
+    example: "Trip fuel 8000 kg → contingence ≈ 400 kg.",
+    quiz: () => {
+      const trip = ri(2000, 12000, 500);
+      const c = round(trip * 0.05);
+      return {
+        prompt: `Trip fuel de ${trip} kg. Fuel de contingence route (5 %) ?`,
+        steps: [`Contingence = ${trip} × 5% = ${c} kg`],
+        answer: c, unit: "kg",
+      };
+    },
+  },
+  {
+    id: "xwind-clock",
+    cat: "vent",
+    title: "Composante traversière (code horaire)",
+    formula: "30° → 50 % · 45° → 70 % · 60° → 85 % · 90° → 100 % du vent",
+    note: "Approximation du sinus par paliers, pour estimer la composante traversière sans calculette selon l'écart entre le QFU et la direction du vent.",
+    example: "Vent 30 kt à 45° de l'axe piste → composante ≈ 30 × 0,7 = 21 kt.",
+    quiz: () => {
+      const spd = ri(10, 40, 5);
+      const angle = pick([30, 45, 60, 90]);
+      const factor = { 30: 0.5, 45: 0.7, 60: 0.85, 90: 1 }[angle];
+      const comp = round(spd * factor);
+      return {
+        prompt: `Vent ${spd} kt, écart de ${angle}° avec l'axe piste. Composante traversière approximative ?`,
+        steps: [`Composante ≈ ${spd} × ${factor} = ${comp} kt`],
+        answer: comp, unit: "kt", tolerance: 1,
+      };
+    },
+  },
+  {
+    id: "hwind-clock",
+    cat: "vent",
+    title: "Composante face/arrière (code horaire)",
+    formula: "30° → 85 % · 45° → 70 % · 60° → 50 % · 90° → 0 % du vent",
+    note: "Symétrique de la règle traversière (cosinus par paliers), pour la composante longitudinale du vent.",
+    example: "Vent 20 kt à 30° de l'axe → composante face ≈ 20 × 0,85 = 17 kt.",
+    quiz: () => {
+      const spd = ri(10, 40, 5);
+      const angle = pick([30, 45, 60, 90]);
+      const factor = { 30: 0.85, 45: 0.7, 60: 0.5, 90: 0 }[angle];
+      const comp = round(spd * factor);
+      return {
+        prompt: `Vent ${spd} kt, écart de ${angle}° avec l'axe. Composante face/arrière approximative ?`,
+        steps: [`Composante ≈ ${spd} × ${factor} = ${comp} kt`],
+        answer: comp, unit: "kt", tolerance: 1,
+      };
+    },
+  },
+  {
+    id: "wca",
+    cat: "vent",
+    title: "Angle de correction de dérive (WCA)",
+    formula: "WCA (°) = Composante traversière (kt) × 60 / TAS (kt)",
+    note: "Règle du « 1 en 60 » : convertit une composante de vent traversier en un angle de correction de cap.",
+    example: "Traversier 20 kt, TAS 300 kt → WCA = 20×60/300 = 4°.",
+    quiz: () => {
+      const tas = ri(150, 320, 10);
+      const xw = ri(10, 40, 5);
+      const wca = round(xw * 60 / tas, 1);
+      return {
+        prompt: `Composante traversière ${xw} kt, TAS ${tas} kt. Angle de correction de dérive ?`,
+        steps: [`WCA = ${xw} × 60 / ${tas} ≈ ${wca}°`],
+        answer: wca, unit: "°", tolerance: 0.3,
+      };
+    },
+  },
+  {
+    id: "gs",
+    cat: "vent",
+    title: "Vitesse sol",
+    formula: "GS = TAS ± composante face/arrière",
+    note: "Vent de face : soustraire. Vent arrière : additionner. Base de toute estimation de temps de trajet.",
+    example: "TAS 280 kt, vent de face 30 kt → GS = 250 kt.",
+    quiz: () => {
+      const tas = ri(200, 320, 10);
+      const w = pick([-40, -30, -20, 20, 30, 40]);
+      const gs = tas + w;
+      return {
+        prompt: `TAS ${tas} kt, composante de vent ${w > 0 ? "arrière" : "de face"} ${Math.abs(w)} kt. Vitesse sol ?`,
+        steps: [`GS = ${tas} ${w >= 0 ? "+" : "−"} ${Math.abs(w)} = ${gs} kt`],
+        answer: gs, unit: "kt",
+      };
+    },
+  },
+  {
+    id: "qnh-bas",
+    cat: "altimetrie",
+    title: "Correction QNH bas",
+    formula: "Correction (ft) = (1013 − QNH) × 30",
+    note: "1 hPa ≈ 30 ft dans la basse atmosphère : donne la correction à appliquer à une altitude/MSA quand le QNH est inférieur à 1013.",
+    example: "QNH 993 → (1013−993)×30 = 600 ft à ajouter.",
+    quiz: () => {
+      const qnh = ri(970, 1010, 1);
+      const corr = round((1013 - qnh) * 30);
+      return {
+        prompt: `QNH ${qnh} hPa. Correction d'altitude à ajouter (règle des 30 ft/hPa) ?`,
+        steps: [`Correction = (1013 − ${qnh}) × 30 = ${corr} ft`],
+        answer: corr, unit: "ft",
+      };
+    },
+  },
+  {
+    id: "cold-temp",
+    cat: "altimetrie",
+    title: "Correction de température froide",
+    formula: "Correction (ft) ≈ 4 ft par 1000 ft AAL et par °C sous ISA",
+    note: "Repère pour majorer une altitude publiée (MSA, altitude de procédure) par temps très froid, l'altimètre indiquant alors plus haut que la réalité.",
+    example: "800 ft AAL, écart ISA de −20°C → 0,8 × 20 × 4 = 64 ft à ajouter.",
+    quiz: () => {
+      const aal = ri(500, 2000, 100);
+      const dev = ri(15, 35, 5);
+      const corr = round(aal / 1000 * dev * 4);
+      return {
+        prompt: `Hauteur ${aal} ft AAL, écart de −${dev}°C sous ISA. Correction approximative ?`,
+        steps: [
+          `Correction ≈ (${aal}/1000) × ${dev} × 4`,
+          `≈ ${round(aal / 1000, 2)} × ${dev} × 4 ≈ ${corr} ft`,
+        ],
+        answer: corr, unit: "ft", tolerance: 8,
+      };
+    },
+  },
+  {
+    id: "rate1",
+    cat: "virages",
+    title: "Virage taux standard (rate 1)",
+    formula: "3°/s → 180° en 60 s · 360° en 2 min",
+    note: "Cadence de virage standard utilisée en attente et par le pilote automatique en mode HDG/TRK à basse vitesse.",
+    example: "Virage de 90° à taux 1 → 30 s.",
+    quiz: () => {
+      const deg = pick([45, 90, 135, 180, 270, 360]);
+      const t = round(deg / 3);
+      return {
+        prompt: `Virage de ${deg}° à taux standard (3°/s). Durée du virage ?`,
+        steps: [`Temps = ${deg} / 3 = ${t} s`],
+        answer: t, unit: "s",
+      };
+    },
+  },
+  {
+    id: "bank-rate1",
+    cat: "virages",
+    title: "Inclinaison pour un virage taux 1",
+    formula: "Inclinaison (°) ≈ GS (kt) / 10 + 7",
+    note: "Estimation rapide de l'angle d'inclinaison nécessaire pour tenir un virage à taux standard à une vitesse sol donnée.",
+    example: "GS 180 kt → 180/10+7 = 25° d'inclinaison.",
+    quiz: () => {
+      const gs = ri(120, 300, 10);
+      const bank = round(gs / 10 + 7);
+      return {
+        prompt: `Vitesse sol ${gs} kt. Inclinaison approximative pour un virage taux 1 ?`,
+        steps: [`Inclinaison ≈ ${gs}/10 + 7 = ${bank}°`],
+        answer: bank, unit: "°",
+      };
+    },
+  },
+  {
+    id: "turn-radius",
+    cat: "virages",
+    title: "Rayon d'un virage taux 1",
+    formula: "Rayon (nm) ≈ GS (kt) / 200",
+    note: "Approximation utile pour dimensionner un circuit d'attente ou une manœuvre à vue autour du taux standard.",
+    example: "GS 220 kt → rayon ≈ 1,1 nm.",
+    quiz: () => {
+      const gs = ri(140, 300, 10);
+      const r = round(gs / 200, 1);
+      return {
+        prompt: `Vitesse sol ${gs} kt, virage à taux standard. Rayon de virage approximatif ?`,
+        steps: [`Rayon ≈ ${gs} / 200 ≈ ${r} nm`],
+        answer: r, unit: "nm", tolerance: 0.2,
+      };
+    },
+  },
+  {
+    id: "glide-check",
+    cat: "approche",
+    title: "Vérification du plan à 3° en finale",
+    formula: "Hauteur (ft) = Distance au seuil (nm) × 300",
+    note: "Contrôle croisé rapide entre la distance DME/RNAV et la hauteur affichée, pour vérifier que l'avion est bien sur un plan à 3°.",
+    example: "5 nm du seuil → hauteur attendue ≈ 1500 ft.",
+    quiz: () => {
+      const d = ri(2, 10, 1);
+      const h = d * 300;
+      return {
+        prompt: `Distance au seuil : ${d} nm. Hauteur attendue sur un plan à 3° ?`,
+        steps: [`Hauteur = ${d} × 300 = ${h} ft`],
+        answer: h, unit: "ft",
+      };
+    },
+  },
+];
+
+const FORMULAS_BY_ID = Object.fromEntries(FORMULAS.map(f => [f.id, f]));
+
+// ---- Persistance légère des stats de quiz (localStorage) ---------------
+const STORAGE_KEY = "a320-quiz-stats-v1";
+function loadStats() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function saveStats(stats) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stats)); }
+  catch (e) { /* stockage indisponible : tant pis pour la persistance */ }
+}
+
+function NavPills({ current }) {
+  const pages = [
+    { key: "gammes", href: "index.html", label: "Gammes" },
+    { key: "accords", href: "accords.html", label: "Accords" },
+    { key: "progressions", href: "progressions.html", label: "Suites" },
+    { key: "a320", href: "a320.html", label: "A320" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      {pages.map(p => p.key === current
+        ? <div key={p.key} style={{ background: "rgba(255,255,255,.06)", borderRadius: 10, padding: "9px 9px", color: "rgba(255,255,255,.45)", fontSize: 10, fontWeight: 800, letterSpacing: .5 }}>{p.label}</div>
+        : <a key={p.key} href={p.href} style={{ background: "rgba(255,255,255,.1)", borderRadius: 10, padding: "9px 9px", color: "white", fontSize: 10, fontWeight: 800, textDecoration: "none", lineHeight: 1, letterSpacing: .5 }}>{p.label}</a>
+      )}
+    </div>
+  );
+}
+
+function ModeSwitch({ mode, setMode }) {
+  return (
+    <div style={{ display: "flex", background: "#F1F5F9", borderRadius: 12, padding: 3, margin: "12px 0" }}>
+      {[["browse", "📖 Réviser"], ["quiz", "🧠 Quiz"]].map(([k, label]) => (
+        <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "9px 2px", borderRadius: 10, border: "none", background: mode === k ? "white" : "transparent", color: mode === k ? "#0F172A" : "#94A3B8", fontWeight: 700, fontSize: 12, cursor: "pointer", boxShadow: mode === k ? "0 1px 4px rgba(0,0,0,.1)" : "none" }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function CatChip({ label, color, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{ padding: "6px 12px", borderRadius: 20, border: "none", flexShrink: 0, background: active ? color : "#F1F5F9", color: active ? "white" : "#64748B", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+      {label}
+    </button>
+  );
+}
+
+function FormulaCard({ f, open, onToggle }) {
+  const color = CATEGORIES[f.cat].color;
+  return (
+    <div style={{ background: "#F8FAFC", border: `1px solid ${open ? color + "55" : "#E2E8F0"}`, borderRadius: 12, marginBottom: 8, overflow: "hidden" }}>
+      <button onClick={onToggle} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{f.title}</span>
+        <span style={{ fontSize: 12, color: color, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 14px 14px" }}>
+          <div style={{ background: "#0F172A", borderRadius: 9, padding: "9px 11px", fontSize: 12, fontWeight: 700, color: "#93C5FD", marginBottom: 8, fontFamily: "ui-monospace, monospace", lineHeight: 1.5 }}>
+            {f.formula}
+          </div>
+          <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.6, marginBottom: 8 }}>{f.note}</div>
+          <div style={{ fontSize: 11, color: color, background: color + "14", borderRadius: 8, padding: "8px 10px", lineHeight: 1.6 }}>
+            <strong>Exemple —</strong> {f.example}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BrowseMode() {
+  const [openId, setOpenId] = useState(null);
+  const [cat, setCat] = useState("all");
+  const list = cat === "all" ? FORMULAS : FORMULAS.filter(f => f.cat === cat);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 10 }}>
+        <CatChip label="Toutes" color="#0F172A" active={cat === "all"} onClick={() => setCat("all")} />
+        {Object.entries(CATEGORIES).map(([k, c]) => (
+          <CatChip key={k} label={c.label} color={c.color} active={cat === k} onClick={() => setCat(k)} />
+        ))}
+      </div>
+      {list.map(f => (
+        <FormulaCard key={f.id} f={f} open={openId === f.id} onToggle={() => setOpenId(openId === f.id ? null : f.id)} />
+      ))}
+    </div>
+  );
+}
+
+function weightedPick(pool, stats) {
+  // Une formule ratée plus souvent que réussie a plus de chances de revenir.
+  const weights = pool.map(f => {
+    const s = stats[f.id];
+    if (!s || !s.seen) return 3;
+    const missRate = s.miss / s.seen;
+    return 1 + missRate * 5;
+  });
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
+}
+
+function QuizMode() {
+  const [cat, setCat] = useState("all");
+  const [stats, setStats] = useState(loadStats);
+  const quizzable = useMemo(() => FORMULAS.filter(f => f.quiz), []);
+  const pool = cat === "all" ? quizzable : quizzable.filter(f => f.cat === cat);
+
+  const [current, setCurrent] = useState(null);
+  const [scenario, setScenario] = useState(null);
+  const [revealed, setRevealed] = useState(false);
+
+  function draw(fromPool) {
+    const f = weightedPick(fromPool.length ? fromPool : quizzable, stats);
+    setCurrent(f);
+    setScenario(f.quiz());
+    setRevealed(false);
+  }
+
+  useEffect(() => { draw(pool); }, [cat]);
+
+  function mark(missed) {
+    const next = { ...stats };
+    const s = next[current.id] || { seen: 0, miss: 0 };
+    next[current.id] = { seen: s.seen + 1, miss: s.miss + (missed ? 1 : 0) };
+    setStats(next);
+    saveStats(next);
+    draw(pool);
+  }
+
+  if (!current || !scenario) return null;
+  const color = CATEGORIES[current.cat].color;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
+        <CatChip label="Toutes" color="#0F172A" active={cat === "all"} onClick={() => setCat("all")} />
+        {Object.entries(CATEGORIES).filter(([k]) => quizzable.some(f => f.cat === k)).map(([k, c]) => (
+          <CatChip key={k} label={c.label} color={c.color} active={cat === k} onClick={() => setCat(k)} />
+        ))}
+      </div>
+      <div style={{ background: "#fff", border: `2px solid ${color}33`, borderRadius: 16, padding: 18 }}>
+        <div style={{ fontSize: 9, fontWeight: 800, color: color, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+          {CATEGORIES[current.cat].label} · {current.title}
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", lineHeight: 1.5, marginBottom: 16 }}>
+          {scenario.prompt}
+        </div>
+        {!revealed ? (
+          <button onClick={() => setRevealed(true)} style={{ width: "100%", padding: "13px", borderRadius: 12, border: "none", background: color, color: "white", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
+            Voir la réponse
+          </button>
+        ) : (
+          <div>
+            <div style={{ background: "#F8FAFC", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+              {scenario.steps.map((s, i) => (
+                <div key={i} style={{ fontSize: 12, color: "#475569", fontFamily: "ui-monospace, monospace", marginBottom: 3 }}>{s}</div>
+              ))}
+            </div>
+            <div style={{ textAlign: "center", padding: "10px 0 16px" }}>
+              <div style={{ fontSize: 9, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Réponse</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#0F172A" }}>{scenario.answer} <span style={{ fontSize: 14, color: "#94A3B8", fontWeight: 700 }}>{scenario.unit}</span></div>
+              {scenario.tolerance != null && <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 2 }}>± {scenario.tolerance} {scenario.unit} accepté (approximation)</div>}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => mark(true)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "2px solid #FCA5A5", background: "#FEF2F2", color: "#DC2626", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                🔁 À revoir
+              </button>
+              <button onClick={() => mark(false)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "2px solid #86EFAC", background: "#F0FDF4", color: "#16A34A", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                ✓ Facile
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [mode, setMode] = useState("browse");
+  return (
+    <div style={{ minHeight: "100vh", background: "#E8EDF5", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 430, minHeight: "100vh", background: "#fff", display: "flex", flexDirection: "column" }}>
+        <div style={{ background: "#0F172A", paddingTop: "env(safe-area-inset-top, 0px)" }}>
+          {!IS_APP && (
+            <div style={{ padding: "14px 20px 10px", display: "flex", justifyContent: "space-between", fontSize: 12, color: "white", fontWeight: 600 }}>
+              <span>9:41</span><span style={{ fontSize: 15, letterSpacing: -1 }}>●●●</span><span>🔋</span>
+            </div>
+          )}
+        </div>
+        <div style={{ background: "linear-gradient(135deg,#0F172A 0%,#1E3A5F 100%)", padding: "18px 18px 20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 9, color: "#93C5FD", letterSpacing: 2, marginBottom: 3, textTransform: "uppercase" }}>Calcul mental en ligne</div>
+              <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "white", lineHeight: 1.1 }}>Formules A320</h1>
+              <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>{FORMULAS.length} formules · {Object.keys(CATEGORIES).length} catégories</div>
+            </div>
+            <NavPills current="a320" />
+          </div>
+        </div>
+        <div style={{ flex: 1, padding: "0 14px calc(40px + env(safe-area-inset-bottom, 0px))" }}>
+          <ModeSwitch mode={mode} setMode={setMode} />
+          {mode === "browse" ? <BrowseMode /> : <QuizMode />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
