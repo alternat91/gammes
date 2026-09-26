@@ -1,27 +1,29 @@
 # Gammes
 
-Quatre outils de révision, en pages HTML autonomes (React via CDN, aucune installation).
-Chaque page a un bouton de navigation vers les trois autres, accessible à tout moment.
+Trois outils de travail pour musiciens, en pages HTML autonomes (React via CDN, aucune installation).
+Chaque page a un bouton de navigation vers les deux autres, accessible à tout moment.
 
 | Page | Contenu |
 | --- | --- |
 | [`index.html`](index.html) | Révision des gammes : 25 gammes et modes affichés sur clavier, manche de guitare et de basse. |
 | [`accords.html`](accords.html) | Générateur d'accords de guitare : les positions jouables sont **calculées**, pas listées dans un dictionnaire. |
 | [`progressions.html`](progressions.html) | Doigtés pour des suites d'accords typiques (2‑5‑1, 1‑6‑4‑5, cadence andalouse, blues 12 mesures…), dans n'importe quelle tonalité. |
-| [`a320.html`](a320.html) | Révision des formules de calcul mental utiles en ligne à un pilote A320 : descente, vent, carburant, virages, altimétrie, approche. |
+
+La révision des formules de calcul mental A320 a déménagé dans son propre dépôt dédié :
+[alternat91/formules-a320](https://github.com/alternat91/formules-a320).
 
 ## Installation sur iPhone / Android
 
-Les quatre pages sont des applications installables (PWA). Sur iPhone : ouvre la page dans
+Les trois pages sont des applications installables (PWA). Sur iPhone : ouvre la page dans
 **Safari** → bouton Partager → **Sur l'écran d'accueil**. L'application s'ouvre alors en plein
 écran, sans l'interface de Safari, avec sa propre icône, et **fonctionne sans réseau** une fois
 lancée une première fois.
 
 Chaque page s'installe séparément, avec sa propre icône : `index.html` donne « Gammes » (clavier),
 `accords.html` donne « Accords » (grille d'accords), `progressions.html` donne « Suites » (grilles
-chaînées par une flèche), `a320.html` donne « A320 » (avion).
+chaînées par une flèche).
 
-Le service worker (`sw.js`) met en cache les quatre pages, les icônes et les librairies React au
+Le service worker (`sw.js`) met en cache les trois pages, les icônes et les librairies React au
 premier chargement, puis sert tout depuis le cache en le rafraîchissant en arrière-plan. Pour
 publier une nouvelle version, incrémente `VERSION` dans `sw.js` : l'ancien cache est supprimé au
 prochain lancement.
@@ -79,20 +81,3 @@ reste active si tu changes de tonalité, d'accordage ou de zone du manche, et ne
 si tu choisis une autre suite. Les accords diminués et demi-diminués (ii° d'un turnaround mineur,
 par exemple) n'affichent aucune substitution : leur reharmonisation dépend trop du contexte pour
 une règle générique fiable.
-
-## Les formules A320
-
-21 règles de calcul mental utilisées en ligne, réparties en 7 catégories (descente, vitesse/temps/
-distance, carburant, vent & dérive, altimétrie, virages & attente, approche). Deux modes :
-
-- **📖 Réviser** — les formules sont regroupées par catégorie, chaque carte se déplie pour afficher
-  la formule, son explication et un exemple chiffré.
-- **🧠 Quiz** — un scénario est tiré avec des valeurs aléatoires réalistes (ex. « Croisière FL350,
-  altitude cible 4000 ft, distance du top de descente ? ») ; le calcul se fait de tête, puis le
-  bouton **Voir la réponse** affiche le détail du calcul et le résultat. Le classement en
-  **✓ Facile** / **🔁 À revoir** est mémorisé (`localStorage`) pour faire revenir plus souvent les
-  formules ratées.
-
-Les formules sont des règles de calcul mental usuelles en ligne (TOD à la règle des 3, V/S = GS×5,
-composantes de vent au code horaire, correction QNH à 30 ft/hPa, virage taux 1…) : des
-approximations volontaires, à vérifier avec les documents opérateur pour un usage réel en vol.
